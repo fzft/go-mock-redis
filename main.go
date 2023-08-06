@@ -1,1 +1,7 @@
-package go_mock_redis
+package main
+
+func main() {
+	InitLogger()
+	s := NewServer(":8080")
+	s.Run()
+}

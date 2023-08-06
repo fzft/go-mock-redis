@@ -1,1 +1,1 @@
-package go_mock_redis
+package main
