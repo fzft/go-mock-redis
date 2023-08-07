@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 type MultiError []error
 
@@ -12,3 +15,5 @@ func (m MultiError) Error() string {
 	}
 	return b.String()
 }
+
+var ErrSignalStopped = errors.New("signal stopped")

@@ -12,4 +12,5 @@
 - **Data Structures**: `go-mock-redis` implements various Redis data structures, including strings, queues, sets, and sorted sets (zsets).
 - **REPL**: `go-mock-redis` includes a REPL (read-eval-print loop) that allows users to interact with the server via a command line interface.
 - **ZeroCopy**: `go-mock-redis` uses zero-copy techniques `sendfile` to avoid unnecessary memory allocations and copies. This improves performance and reduces memory usage.
+- **RESP**: `go-mock-redis` uses the RESP3 (REdis Serialization Protocol) to communicate with clients. This allows it to be compatible with existing Redis clients.
 ## Building

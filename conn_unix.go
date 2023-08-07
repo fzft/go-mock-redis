@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"fmt"
 	"golang.org/x/sys/unix"
-	"io"
 	"os"
 )
 
@@ -36,22 +35,26 @@ type DefaultBufferedConn struct {
 	fd        int
 	ip        string
 	outBuffer bytes.Buffer
-
-	poll *Poll
+	poll      *Poll
 }
 
 func (c *DefaultBufferedConn) Read() ([]byte, error) {
 	// SAFETY: The fd is valid, so this will not return nil.
 
-	fdName := fmt.Sprintf("conn_from_%d", c.fd)
-	file := os.NewFile(uintptr(c.fd), fdName)
-	if file == nil {
-		return nil, fmt.Errorf("invalid fd: %d", c.fd)
-	}
 	var buf bytes.Buffer
-	_, err := io.Copy(&buf, file)
-	if err != nil {
-		return nil, err
+	readBuffer := make([]byte, 4096)
+
+	for {
+		n, err := unix.Read(c.fd, readBuffer)
+		if n > 0 {
+			buf.Write(readBuffer[:n])
+		}
+		if err != nil {
+			if IsTemporaryError(err) {
+				break
+			}
+			return nil, err
+		}
 	}
 
 	return buf.Bytes(), nil

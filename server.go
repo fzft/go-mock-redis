@@ -11,28 +11,28 @@ import (
 const MaxFD int64 = 1024
 
 type Server struct {
-	addr    string
+	address string
 	reactor *Reactor
 	handler ReaderHandler
 }
 
 func NewServer(addr string) *Server {
 	return &Server{
-		addr: addr,
+		address: addr,
 	}
 }
 
 func (s *Server) Run() error {
-	signals := make(chan os.Signal)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	sigCh := make(chan os.Signal)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
-	ln, err := net.Listen("tcp", s.addr)
+	ln, err := net.Listen("tcp", s.address)
 	if err != nil {
 		Logger.Error("listen error: ", zap.Error(err))
 		return err
 	}
 
-	reactor, err := NewReactor(ln, signals)
+	reactor, err := NewReactor(ln, sigCh)
 	if err != nil {
 		return err
 	}
@@ -41,16 +41,14 @@ func (s *Server) Run() error {
 		s.handler = DefaultHandler{}
 	}
 
-	reactor.Handler(s.handler)
+	reactor.SetHandler(s.handler)
 
-	Logger.Info("listening on ", zap.String("addr", s.addr))
-	// blocking
+	Logger.Info("listening on ", zap.String("addr", s.address))
 	reactor.Run()
-
 	Logger.Info("shutting down server")
 	return nil
 }
 
-func (s *Server) Handler(handler ReaderHandler) {
+func (s *Server) SetHandler(handler ReaderHandler) {
 	s.handler = handler
 }

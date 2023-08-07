@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func checkFdValidity(fd int) bool {
+func isFDValid(fd int) bool {
 	// Try to get the flags of the file descriptor
 	_, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
 	if err != nil {
@@ -25,7 +25,7 @@ func IsTemporaryError(err error) bool {
 }
 
 func CloseFd(fd int) error {
-	if checkFdValidity(fd) {
+	if isFDValid(fd) {
 		if err := unix.Close(fd); err != nil {
 			return err
 		}

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"go.uber.org/zap"
 	"io"
 )
 
@@ -26,11 +26,11 @@ type DefaultHandler struct{}
 func (dh DefaultHandler) Read(conn Conn) error {
 	// Default read logic. This can be replaced by the user if they implement their own handler.
 	data, err := conn.Read()
+	Logger.Info("read data", zap.ByteString("data", data))
 	if err != nil {
 		return err
 	}
-	conn.Write([]byte("hello world"))
-	fmt.Println(string(data)) // Just print data as an example.
+	conn.Write(data)
 	return nil
 }
 
