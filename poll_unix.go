@@ -153,7 +153,7 @@ func (p *Poll) processEvent(fd int, ev *unix.EpollEvent) error {
 	}
 
 	if fd == p.efd {
-		// if the fd is the read end of the pipe, it means that there is a signal to handle
+		// if the fd is the read end of the eventfd, it means that there is a signal to handle
 		return p.handleSignal(fd)
 	} else if fd == p.listenFD {
 		// if the fd is the listener, it means that there is a new connection
