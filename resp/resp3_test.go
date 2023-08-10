@@ -142,3 +142,70 @@ func TestConvertToRESPZAddMultiple(t *testing.T) {
 	expected := []byte("*6\r\n$4\r\nZADD\r\n$6\r\nmyzset\r\n$1\r\n1\r\n$3\r\none\r\n$1\r\n2\r\n$3\r\ntwo\r\n")
 	assert.Equal(t, expected, command)
 }
+
+//func TestParseRESPAttribute(t *testing.T) {
+//	// An example that includes an attribute followed by a simple string.
+//	resp := []byte("|1\r\n+key\r\n+value\r\n+Hello world\r\n")
+//	node, _ := parseRESP(resp)
+//
+//	// The expected output is an attribute followed by a simple string.
+//	expected := []Node{
+//		Attribute{Key: SimpleString{Value: "key"}, Value: SimpleString{Value: "value"}},
+//		SimpleString{Value: "Hello world"},
+//	}
+//	assert.Equal(t, expected, node)
+//}
+//
+//func TestParseRESPMultipleAttributes(t *testing.T) {
+//	// An example with multiple attributes followed by a simple string.
+//	resp := []byte("|2\r\n+key1\r\n+value1\r\n+key2\r\n+value2\r\n+Payload\r\n")
+//	node, _ := parseRESP(resp)
+//
+//	expected := []Node{
+//		Attribute{Key: SimpleString{Value: "key1"}, Value: SimpleString{Value: "value1"}},
+//		Attribute{Key: SimpleString{Value: "key2"}, Value: SimpleString{Value: "value2"}},
+//		SimpleString{Value: "Payload"},
+//	}
+//	assert.Equal(t, expected, node)
+//}
+//
+//func TestParseRESPAttributeWithArrayPayload(t *testing.T) {
+//	// An example that includes an attribute followed by an array.
+//	resp := []byte("|1\r\n+annotation\r\n+This is an attribute\r\n*2\r\n+Element1\r\n+Element2\r\n")
+//	node, _ := parseRESP(resp)
+//
+//	expected := []Node{
+//		Attribute{Key: SimpleString{Value: "annotation"}, Value: SimpleString{Value: "This is an attribute"}},
+//		Array{
+//			Elements: []Node{
+//				SimpleString{Value: "Element1"},
+//				SimpleString{Value: "Element2"},
+//			},
+//		},
+//	}
+//	assert.Equal(t, expected, node)
+//}
+//
+//func TestParseRESPComplexAttribute(t *testing.T) {
+//	resp := []byte("|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n")
+//	node, _ := parseRESP(resp)
+//
+//	expected := []Node{
+//		Attribute{
+//			Key: SimpleString{Value: "key-popularity"},
+//			Value: Map{
+//				Elements: map[Node]Node{
+//					BlobString{Value: "a"}: Double{Value: 0.1923},
+//					BlobString{Value: "b"}: Double{Value: 0.0012},
+//				},
+//			},
+//		},
+//		Array{
+//			Elements: []Node{
+//				Integer{Value: 2039123},
+//				Integer{Value: 9543892},
+//			},
+//		},
+//	}
+//	assert.Equal(t, expected, node)
+//}

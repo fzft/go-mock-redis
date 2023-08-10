@@ -62,6 +62,11 @@ type Push struct {
 	Elements []Node
 }
 
+type Attribute struct {
+	Key   Node
+	Value Node
+}
+
 func parseRESP(data []byte) (Node, []byte) {
 	switch data[0] {
 	case TypeArray: // Array
@@ -100,6 +105,30 @@ func parseRESP(data []byte) (Node, []byte) {
 		val := data[1] == 't' || data[1] == 'T' // you can check for 'f'/'F' for false but just checking for 't'/'T' should be sufficient
 		return Boolean{Value: val}, data[3:]
 
+	case TypeVerbatim: // VerbatimString
+		parts := bytes.SplitN(data, []byte(CRLF), 2)
+		totalLength, _ := strconv.Atoi(string(parts[0][1:])) // Extracting length
+
+		// We know that the format is always 3 characters, so let's split the remaining data accordingly
+		formatContentPart := parts[1]
+		format := string(formatContentPart[:3])
+		value := string(formatContentPart[4:totalLength]) // Subtracting 4 for "txt:" length
+
+		// Returning remaining data after consuming the VerbatimString
+		remainingData := formatContentPart[totalLength:]
+		return VerbatimString{Format: format, Value: value}, remainingData
+	case TypeNull: // Null value
+		return Null{}, data[2:] // Consume the "_\r\n"
+
+	case TypeDouble: // Double
+		parts := bytes.SplitN(data, []byte(CRLF), 2)
+		value, _ := strconv.ParseFloat(string(parts[0][1:]), 64) // Parse the float value
+		return Double{Value: value}, parts[1]
+
+	case TypeBignum: // Bignum
+		parts := bytes.SplitN(data, []byte(CRLF), 2)
+		return BigNum{Value: string(parts[0][1:])}, parts[1]
+
 	case TypeSet: // Set
 		parts := bytes.SplitN(data, []byte(CRLF), 2)
 		count, _ := strconv.Atoi(string(parts[0][1:]))
@@ -137,30 +166,25 @@ func parseRESP(data []byte) (Node, []byte) {
 		}
 		return array, remaining
 
-	case TypeVerbatim: // VerbatimString
+	case TypeAttribute: // Attribute
 		parts := bytes.SplitN(data, []byte(CRLF), 2)
-		totalLength, _ := strconv.Atoi(string(parts[0][1:])) // Extracting length
+		count, _ := strconv.Atoi(string(parts[0][1:]))
+		remaining := parts[1]
 
-		// We know that the format is always 3 characters, so let's split the remaining data accordingly
-		formatContentPart := parts[1]
-		format := string(formatContentPart[:3])
-		value := string(formatContentPart[4:totalLength]) // Subtracting 4 for "txt:" length
+		attributes := make(map[Node]Node)
+		for i := 0; i < count*2; i += 2 {
+			key, newRemaining := parseRESP(remaining)
+			value, nextRemaining := parseRESP(newRemaining)
+			attributes[key] = value
+			remaining = nextRemaining
+		}
 
-		// Returning remaining data after consuming the VerbatimString
-		remainingData := formatContentPart[totalLength:]
-		return VerbatimString{Format: format, Value: value}, remainingData
-	case TypeNull: // Null value
-		return Null{}, data[2:] // Consume the "_\r\n"
+		// Attributes are followed by another RESP type (the actual payload)
+		payload, remaining := parseRESP(remaining)
 
-	case TypeDouble: // Double
-		parts := bytes.SplitN(data, []byte(CRLF), 2)
-		value, _ := strconv.ParseFloat(string(parts[0][1:]), 64) // Parse the float value
-		return Double{Value: value}, parts[1]
-
-	case TypeBignum: // Bignum
-		parts := bytes.SplitN(data, []byte(CRLF), 2)
-		return BigNum{Value: string(parts[0][1:])}, parts[1]
-
+		// You can decide how to use the attributes. Maybe you want to add them to the payload Node, or create a new Node type
+		// that holds both the attributes and the payload. For this example, I'll just ignore the attributes and return the payload.
+		return payload, remaining
 	default:
 		return nil, data
 	}
@@ -172,14 +196,14 @@ func ConvertToRESP(command string, arguments ...string) []byte {
 	var builder strings.Builder
 
 	// Array with totalArgs elements
-	builder.WriteString(fmt.Sprintf("*%d\r\n", totalArgs))
+	builder.WriteString(fmt.Sprintf("*%d%s", totalArgs, CRLF))
 
 	// Add the command
-	builder.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(command), command))
+	builder.WriteString(fmt.Sprintf("$%d%s%s%s", len(command), CRLF, command, CRLF))
 
 	// Add the arguments
 	for _, arg := range arguments {
-		builder.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg))
+		builder.WriteString(fmt.Sprintf("$%d%s%s%s", len(arg), CRLF, arg, CRLF))
 	}
 
 	return []byte(builder.String())
@@ -226,7 +250,6 @@ func printNode(node Node, indent string) {
 		for _, elem := range n.Elements {
 			printNode(elem, indent+"  ")
 		}
-		// Add other node types here...
 	default:
 		fmt.Println(indent + "Unknown Node Type!")
 	}
