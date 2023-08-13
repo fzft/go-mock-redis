@@ -7,7 +7,7 @@ import (
 )
 
 func TestHashTableSetAndGet(t *testing.T) {
-	ht := NewHashTable[int](10)
+	ht := NewHashTable[string, int](10)
 	ht.Set("one", 1)
 	ht.Set("two", 2)
 
@@ -24,7 +24,7 @@ func TestHashTableSetAndGet(t *testing.T) {
 }
 
 func TestHashTableDelete(t *testing.T) {
-	ht := NewHashTable[int](10)
+	ht := NewHashTable[string, int](10)
 	ht.Set("one", 1)
 	ht.Delete("one")
 
@@ -33,7 +33,7 @@ func TestHashTableDelete(t *testing.T) {
 }
 
 func TestHashTableResize(t *testing.T) {
-	ht := NewHashTable[int](10)
+	ht := NewHashTable[string, int](10)
 
 	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("key%d", i)
@@ -47,4 +47,36 @@ func TestHashTableResize(t *testing.T) {
 	value, exists = ht.Get("key99")
 	assert.True(t, exists, "Key 'key99' should exist")
 	assert.Equal(t, 99, value, "Value for key 'key99' should be 99")
+}
+
+func TestGetSomeKeys(t *testing.T) {
+	table := NewHashTable[string, string](10)
+	table.Set("name1", "John")
+	table.Set("name2", "Doe")
+	table.Set("name3", "Smith")
+
+	keys := table.GetSomeKeys(2, func(cap int) []string { return make([]string, 0, cap) })
+	assert.NotNil(t, keys)
+	assert.Equal(t, 2, len(keys))
+
+	for _, key := range keys {
+		_, exists := table.Get(key)
+		assert.True(t, exists, "Expected key to exist in table:", key)
+	}
+}
+
+func TestGetSomeKeysWhenEmpty(t *testing.T) {
+	table := NewHashTable[string, string](10)
+	keys := table.GetSomeKeys(10, func(cap int) []string { return make([]string, 0, cap) })
+	assert.Nil(t, keys)
+}
+
+func TestGetSomeKeysWhenCountIsGreaterThanSize(t *testing.T) {
+	table := NewHashTable[string, string](10)
+	table.Set("name1", "John")
+
+	keys := table.GetSomeKeys(5, func(cap int) []string { return make([]string, 0, cap) })
+	assert.NotNil(t, keys)
+	assert.Equal(t, 1, len(keys))
+	assert.Equal(t, "name1", keys[0])
 }
