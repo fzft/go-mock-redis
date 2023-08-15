@@ -136,7 +136,7 @@ func (h *HashTable[K, V]) Empty() bool {
 
 // GetSomeKeys returns a slice of up to `count` keys sampled from the hash table.
 // If the hash table has fewer than `count` keys, it returns all of them.
-func (h *HashTable[K, V]) GetSomeKeys(count int, factory SliceFactory[K]) []K {
+func (h *HashTable[K, V]) GetSomeKeys(count int) []K {
 	if h.Empty() {
 		return nil
 	}
@@ -145,20 +145,23 @@ func (h *HashTable[K, V]) GetSomeKeys(count int, factory SliceFactory[K]) []K {
 		count = h.Len()
 	}
 
-	keys := factory(count)
-	visited := 0
+	keys := make([]K, 0, count)
+	visitedBuckets := make(map[int]struct{})
 
-	// This loop ensures that we've sampled enough keys or visited all the buckets.
-	for len(keys) < count && visited < h.Size {
+	// As long as we haven't got the required number of keys and haven't visited all buckets
+	for len(keys) < count && len(visitedBuckets) < h.Size {
 		index := rand.Intn(h.Size)
-		curr := h.Table[index]
-		if curr != nil {
+
+		// If this bucket is unvisited
+		if _, alreadyVisited := visitedBuckets[index]; !alreadyVisited {
+			visitedBuckets[index] = struct{}{} // Mark bucket as visited
+
+			curr := h.Table[index]
 			for curr != nil && len(keys) < count {
 				keys = append(keys, curr.Key)
 				curr = curr.Next
 			}
 		}
-		visited++
 	}
 
 	return keys

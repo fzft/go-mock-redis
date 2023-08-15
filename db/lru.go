@@ -12,7 +12,7 @@ const LRU_BITS = 24
 const LRU_CLOCK_RESOLUTION = 1000
 const LRU_CLOCK_MAX = ((1 << LRU_BITS) - 1)
 
-const EVPOOL_SIZE = 16
+const EVPOOL_SIZE = 4
 const MEMORY_SAMPLES = 5
 
 // Redis maxmemory strategies
@@ -36,13 +36,13 @@ type evictionPoolEntry struct {
 }
 
 type LRU struct {
-	ep [EVPOOL_SIZE]*evictionPoolEntry
+	ep [EVPOOL_SIZE]evictionPoolEntry
 }
 
 func NewLRU() *LRU {
-	var ep [EVPOOL_SIZE]*evictionPoolEntry
+	var ep [EVPOOL_SIZE]evictionPoolEntry
 	for i := 0; i < EVPOOL_SIZE; i++ {
-		ep[i] = &evictionPoolEntry{}
+		ep[i] = evictionPoolEntry{}
 	}
 	return &LRU{
 		ep: ep,
@@ -102,13 +102,12 @@ func (lru *LRU) estimateObjectIdleTime(hz int, srvClock int64, o *RedisObj) int6
 // with the same idle time are put on the right
 func (lru *LRU) EvictionPoolPopulate(sampleDict *HashTable[string, *RedisObj], keyDict *HashTable[string, *RedisObj]) {
 
-	keys := sampleDict.GetSomeKeys(MEMORY_SAMPLES, func(cap int) []string { return make([]string, 0, cap) })
+	keys := sampleDict.GetSomeKeys(MEMORY_SAMPLES)
+	fmt.Printf("keys: %v\n", keys)
+
 	for _, key := range keys {
 		o, _ := keyDict.Get(key)
-		idle := lru.estimateObjectIdleTime(100, 0, o)
-
-		fmt.Printf("key: %s, idle: %d\n", key, idle)
-
+		idle := lru.estimateObjectIdleTime(100, 100, o)
 		// Find the first empty slot or the first slot that has a lower idle time than the current key.
 		k := 0
 		for k < EVPOOL_SIZE && lru.ep[k].Key != "" && lru.ep[k].Idle < idle {
@@ -125,11 +124,15 @@ func (lru *LRU) EvictionPoolPopulate(sampleDict *HashTable[string, *RedisObj], k
 				// There is an empty slot at the end, shift all slots from k to the end to the right.
 				copy(lru.ep[k+1:], lru.ep[k:])
 			} else {
-				// No empty slots, replace the slot at k-1.
+				/* No free space on right? Insert at k-1 */
 				k--
+				/* Shift all elements on the left of k (included) to the
+				 * left, so we discard the element with smaller idle time. */
+
+				copy(lru.ep[:k], lru.ep[1:k+1])
+
 			}
 		}
-
 		lru.ep[k].Key = key
 		lru.ep[k].Idle = idle
 	}

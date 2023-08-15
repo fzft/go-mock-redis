@@ -55,7 +55,7 @@ func TestGetSomeKeys(t *testing.T) {
 	table.Set("name2", "Doe")
 	table.Set("name3", "Smith")
 
-	keys := table.GetSomeKeys(2, func(cap int) []string { return make([]string, 0, cap) })
+	keys := table.GetSomeKeys(2)
 	assert.NotNil(t, keys)
 	assert.Equal(t, 2, len(keys))
 
@@ -67,7 +67,7 @@ func TestGetSomeKeys(t *testing.T) {
 
 func TestGetSomeKeysWhenEmpty(t *testing.T) {
 	table := NewHashTable[string, string](10)
-	keys := table.GetSomeKeys(10, func(cap int) []string { return make([]string, 0, cap) })
+	keys := table.GetSomeKeys(10)
 	assert.Nil(t, keys)
 }
 
@@ -75,7 +75,7 @@ func TestGetSomeKeysWhenCountIsGreaterThanSize(t *testing.T) {
 	table := NewHashTable[string, string](10)
 	table.Set("name1", "John")
 
-	keys := table.GetSomeKeys(5, func(cap int) []string { return make([]string, 0, cap) })
+	keys := table.GetSomeKeys(5)
 	assert.NotNil(t, keys)
 	assert.Equal(t, 1, len(keys))
 	assert.Equal(t, "name1", keys[0])
