@@ -3,6 +3,7 @@ package db
 import (
 	"fmt"
 	"github.com/stretchr/testify/assert"
+	"sync/atomic"
 	"testing"
 )
 
@@ -79,4 +80,32 @@ func TestGetSomeKeysWhenCountIsGreaterThanSize(t *testing.T) {
 	assert.NotNil(t, keys)
 	assert.Equal(t, 1, len(keys))
 	assert.Equal(t, "name1", keys[0])
+}
+
+func TestMemoryUsage(t *testing.T) {
+	// Reset usedMemory for testing
+	atomic.StoreInt64(&usedMemory, 0)
+
+	// Create a new hash table
+	table := NewHashTable[int, string](10)
+
+	// Set key-value pairs
+	table.Set(1, "one")
+	table.Set(2, "two")
+	table.Set(3, "three")
+
+	// Calculate expected memory after inserts
+	expectedMemoryAfterInserts := estimateMemoryUsage(1) + estimateMemoryUsage("one") + estimateMemoryUsage(2) + estimateMemoryUsage("two") + estimateMemoryUsage(3) + estimateMemoryUsage("three")
+
+	// Assert memory usage after inserts
+	assert.Equal(t, expectedMemoryAfterInserts, getUsedMemory(), "Memory usage after inserts is incorrect")
+
+	// Delete a key-value pair
+	table.Delete(1)
+
+	// Calculate expected memory after delete
+	expectedMemoryAfterDelete := expectedMemoryAfterInserts - estimateMemoryUsage(1) - estimateMemoryUsage("one")
+
+	// Assert memory usage after delete
+	assert.Equal(t, expectedMemoryAfterDelete, getUsedMemory(), "Memory usage after delete is incorrect")
 }

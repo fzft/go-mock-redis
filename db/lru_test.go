@@ -1,14 +1,13 @@
 package db
 
 import (
-	"fmt"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
 func TestEvictionPoolPopulate(t *testing.T) {
 	// Setup
-	lru := NewLRU()
+	lru := NewLRU(New(0))
 	sampleDict := NewHashTable[string, *RedisObj](10)
 	keyDict := NewHashTable[string, *RedisObj](10)
 
@@ -40,7 +39,7 @@ func TestEvictionPoolPopulate(t *testing.T) {
 
 func TestEvictionPoolReplaceMiddleSlot(t *testing.T) {
 	// Setup
-	lru := NewLRU()
+	lru := NewLRU(New(0))
 	sampleDict := NewHashTable[string, *RedisObj](10)
 	keyDict := NewHashTable[string, *RedisObj](10)
 
@@ -66,10 +65,6 @@ func TestEvictionPoolReplaceMiddleSlot(t *testing.T) {
 	sampleDict.Set("key5", nil)
 
 	lru.EvictionPoolPopulate(sampleDict, keyDict)
-
-	for _, v := range lru.ep {
-		fmt.Printf("Key: %s\n", v.Key)
-	}
 
 	//// Using assert to validate the results
 	assert.Equal(t, "key5", lru.ep[0].Key, "Expected key5 as the most recently used")

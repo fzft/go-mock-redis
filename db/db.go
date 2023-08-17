@@ -59,3 +59,17 @@ func (db *RedisDb) RmExpire(key string) {
 
 	db.expire.Delete(key)
 }
+
+// GenericDelete deletes the key from the dict and the expire dict
+func (db *RedisDb) GenericDelete(key string) bool {
+	// delete the key from the dict
+	exist := db.dict.Delete(key)
+	if !exist {
+		return false
+	}
+
+	// delete the key from the expire dict
+	db.expire.Delete(key)
+
+	return true
+}

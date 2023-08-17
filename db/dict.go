@@ -7,11 +7,14 @@ import (
 	"reflect"
 )
 
-const (
-	loadFactor = 0.7
-)
+// HashTable is a hash table implementation
+// that uses separate chaining for collision resolution
+// and supports incremental rehashing, which allows us to resize the table without blocking operations.
 
-type SliceFactory[K any] func(capacity int) []K
+const (
+	loadFactor       = 0.7
+	rehashingBuckets = 10 // Number of buckets to move during one rehashing step
+)
 
 type Entry[K any, V any] struct {
 	Key   K
@@ -20,100 +23,186 @@ type Entry[K any, V any] struct {
 }
 
 type HashTable[K any, V any] struct {
-	Table []*Entry[K, V]
-	Size  int
-	Count int
+	Table         []*Entry[K, V]
+	Size          int
+	RehashingIdx  int // -1 if not rehashing
+	RehashingSize int // The size of the new table when rehashing
+	RehashingTbl  []*Entry[K, V]
+	Count         int
 }
 
 func NewHashTable[K any, V any](initSize int) *HashTable[K, V] {
 	return &HashTable[K, V]{
-		Table: make([]*Entry[K, V], initSize),
-		Size:  initSize,
+		Table:        make([]*Entry[K, V], initSize),
+		Size:         initSize,
+		RehashingIdx: -1,
 	}
 }
 
-func (h *HashTable[K, V]) Hash(key K) int {
+func (h *HashTable[K, V]) Hash(key K, size int) int {
 	keyString := fmt.Sprintf("%v", key)
 	hasher := fnv.New32a()
 	hasher.Write([]byte(keyString))
-	return int(hasher.Sum32()) % h.Size
+	return int(hasher.Sum32()) % size
 }
 
 func (h *HashTable[K, V]) Set(key K, value V) {
-	// Check if we need to resize the hash table
-	if float64(h.Count)/float64(h.Size) > loadFactor {
-		h.resize()
+	// If we're rehashing, do one rehashing step
+	if h.RehashingIdx >= 0 {
+
+		// Check if the key exists in the new table
+		newIndex := h.Hash(key, h.RehashingSize)
+		for curr := h.RehashingTbl[newIndex]; curr != nil; curr = curr.Next {
+			if reflect.DeepEqual(curr.Key, key) {
+				h.IncreaseUsedMemory(key, value)
+				curr.Value = value
+				return
+			}
+		}
+
+		h.rehashStep()
 	}
 
-	index := h.Hash(key)
+	index := h.Hash(key, h.Size)
 	entry := &Entry[K, V]{Key: key, Value: value, Next: nil}
 	if h.Table[index] == nil {
 		h.Table[index] = entry
 		h.Count++
+		h.IncreaseUsedMemory(key, value)
 	} else {
 		curr := h.Table[index]
 		for curr != nil {
 			if reflect.DeepEqual(curr.Key, key) {
-				curr.Value = value // Update the value
+				h.IncreaseUsedMemory(key, value)
+				curr.Value = value
 				return
 			}
 			if curr.Next == nil {
 				curr.Next = entry
 				h.Count++
+				h.IncreaseUsedMemory(key, value)
 				return
 			}
 			curr = curr.Next
 		}
 	}
+
+	// Start rehashing if load factor exceeded
+	if float64(h.Count)/float64(h.Size) > loadFactor {
+		h.startRehashing()
+	}
 }
 
-func (h *HashTable[K, V]) resize() {
-	newSize := h.Size * 2
-	newTable := make([]*Entry[K, V], newSize)
-	oldTable := h.Table
-	h.Table = newTable
-	h.Size = newSize
-	h.Count = 0 // Reset count because we'll be re-adding the elements
+func (h *HashTable[K, V]) startRehashing() {
+	if h.RehashingIdx < 0 { // Not already rehashing
+		h.RehashingSize = h.Size * 2
+		h.RehashingTbl = make([]*Entry[K, V], h.RehashingSize)
+		h.RehashingIdx = 0
+	}
+}
 
-	for _, entry := range oldTable {
-		for entry != nil {
-			h.Set(entry.Key, entry.Value)
-			entry = entry.Next
+// rehashStep moves rehashingBuckets buckets from the old table to the new table.
+// in this step, the old table used memory will be decreased and the new table used memory will be increased.
+func (h *HashTable[K, V]) rehashStep() {
+	for i := 0; i < rehashingBuckets && h.RehashingIdx < h.Size; i++ {
+		entries := h.Table[h.RehashingIdx]
+		h.Table[h.RehashingIdx] = nil
+		for entries != nil {
+			next := entries.Next
+
+			index := h.Hash(entries.Key, h.RehashingSize)
+			entries.Next = h.RehashingTbl[index]
+			h.RehashingTbl[index] = entries
+
+			entries = next
 		}
+
+		h.RehashingIdx++
+	}
+
+	if h.RehashingIdx == h.Size {
+		h.Table = h.RehashingTbl
+		h.Size = h.RehashingSize
+		h.RehashingTbl = nil
+		h.RehashingIdx = -1
+		h.RehashingSize = 0
 	}
 }
 
 func (h *HashTable[K, V]) Delete(key K) bool {
-	index := h.Hash(key)
-	if h.Table[index] == nil {
-		// The key doesn't exist
+	if h.RehashingIdx >= 0 {
+		// If rehashing, try to delete from both tables.
+		deletedFromOld := h.deleteFromTable(key, h.Table)
+		deletedFromNew := h.deleteFromTable(key, h.RehashingTbl)
+		return deletedFromOld || deletedFromNew
+	} else {
+		// If not rehashing, just delete from the main table.
+		return h.deleteFromTable(key, h.Table)
+	}
+}
+
+// Helper function to delete an entry from a specific table.
+func (h *HashTable[K, V]) deleteFromTable(key K, table []*Entry[K, V]) bool {
+	size := len(table)
+	index := h.Hash(key, size)
+
+	if table[index] == nil {
+		// The key doesn't exist in this table.
 		return false
 	}
 
-	// Special case: check if the key matches the first entry in the list
-	if reflect.DeepEqual(h.Table[index].Key, key) {
-		h.Table[index] = h.Table[index].Next
+	// Special case: check if the key matches the first entry in the list.
+	if reflect.DeepEqual(table[index].Key, key) {
+		h.DecreaseUsedMemory(key, table[index].Value)
+		table[index] = table[index].Next
 		return true
 	}
 
-	prev := h.Table[index]
+	prev := table[index]
 	curr := prev.Next
 	for curr != nil {
 		if reflect.DeepEqual(curr.Key, key) {
-			prev.Next = curr.Next // Bypass the entry to be deleted
+			h.DecreaseUsedMemory(key, curr.Value)
+			prev.Next = curr.Next // Bypass the entry to be deleted.
 			return true
 		}
 		prev = curr
 		curr = curr.Next
 	}
 
-	// If we reach here, the key wasn't found in the list
+	// If we reach here, the key wasn't found in this table's list.
 	return false
 }
 
 func (h *HashTable[K, V]) Get(key K) (V, bool) {
-	index := h.Hash(key)
-	curr := h.Table[index]
+	// If rehashing is ongoing, check the new table first
+	if h.RehashingIdx >= 0 {
+		newIndex := h.Hash(key, h.RehashingSize)
+		for curr := h.RehashingTbl[newIndex]; curr != nil; curr = curr.Next {
+			if reflect.DeepEqual(curr.Key, key) {
+				return curr.Value, true
+			}
+		}
+	}
+
+	// Check the old table
+	index := h.Hash(key, h.Size)
+	for curr := h.Table[index]; curr != nil; curr = curr.Next {
+		if reflect.DeepEqual(curr.Key, key) {
+			return curr.Value, true
+		}
+	}
+
+	var zero V
+	return zero, false
+}
+
+// Helper function to retrieve an entry from a specific table.
+func (h *HashTable[K, V]) getFromTable(key K, table []*Entry[K, V]) (V, bool) {
+	size := len(table)
+	index := h.Hash(key, size)
+
+	curr := table[index]
 	for curr != nil {
 		if reflect.DeepEqual(curr.Key, key) {
 			return curr.Value, true
@@ -165,4 +254,16 @@ func (h *HashTable[K, V]) GetSomeKeys(count int) []K {
 	}
 
 	return keys
+}
+
+// IncreaseUsedMemory increases the used memory by the given amount
+func (h *HashTable[K, V]) IncreaseUsedMemory(key K, val V) {
+	IncreaseUsedMemory(key)
+	IncreaseUsedMemory(val)
+}
+
+// DecreaseUsedMemory decreases the used memory by the given amount
+func (h *HashTable[K, V]) DecreaseUsedMemory(key K, val V) {
+	DecreaseUsedMemory(key)
+	DecreaseUsedMemory(val)
 }
