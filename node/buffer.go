@@ -1,4 +1,4 @@
-package main
+package node
 
 type Buffer interface {
 	// DataToWrite closes the connection.

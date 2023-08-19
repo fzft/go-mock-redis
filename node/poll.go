@@ -1,4 +1,4 @@
-package main
+package node
 
 type Poll struct {
 	done chan struct{}

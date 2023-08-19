@@ -1,6 +1,7 @@
-package main
+package node
 
 import (
+	"github.com/fzft/go-mock-redis/log"
 	"go.uber.org/zap"
 	"net"
 	"os"
@@ -28,7 +29,7 @@ func (s *Server) Run() error {
 
 	ln, err := net.Listen("tcp", s.address)
 	if err != nil {
-		Logger.Error("listen error: ", zap.Error(err))
+		log.Logger.Error("listen error: ", zap.Error(err))
 		return err
 	}
 
@@ -43,9 +44,9 @@ func (s *Server) Run() error {
 
 	reactor.SetHandler(s.handler)
 
-	Logger.Info("listening on ", zap.String("addr", s.address))
+	log.Logger.Info("listening on ", zap.String("addr", s.address))
 	reactor.Run()
-	Logger.Info("shutting down server")
+	log.Logger.Info("shutting down server")
 	return nil
 }
 

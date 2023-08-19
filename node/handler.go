@@ -1,6 +1,7 @@
-package main
+package node
 
 import (
+	"github.com/fzft/go-mock-redis/log"
 	"go.uber.org/zap"
 	"io"
 )
@@ -26,7 +27,7 @@ type DefaultHandler struct{}
 func (dh DefaultHandler) Read(conn Conn) error {
 	// Default read logic. This can be replaced by the user if they implement their own handler.
 	data, err := conn.Read()
-	Logger.Info("read data", zap.ByteString("data", data))
+	log.Logger.Info("read data", zap.ByteString("data", data))
 	if err != nil {
 		return err
 	}

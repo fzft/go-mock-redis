@@ -1,10 +1,11 @@
 //go:build linux
 // +build linux
 
-package main
+package node
 
 import (
 	"fmt"
+	"github.com/fzft/go-mock-redis/log"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	"net"
@@ -30,7 +31,7 @@ func NewPoll(done chan struct{}, size int64, lnFd int) (*Poll, error) {
 	// Create a new epoll instance
 	epfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
 	if err != nil {
-		Logger.Error("Failed to create epoll", zap.Error(err))
+		log.Logger.Error("Failed to create epoll", zap.Error(err))
 		return nil, err
 	}
 
@@ -38,19 +39,19 @@ func NewPoll(done chan struct{}, size int64, lnFd int) (*Poll, error) {
 
 	efd, err := unix.Eventfd(0, unix.EFD_NONBLOCK|unix.EFD_CLOEXEC)
 	if err != nil {
-		Logger.Error("Failed to create eventfd", zap.Error(err))
+		log.Logger.Error("Failed to create eventfd", zap.Error(err))
 		return nil, err
 	}
 
 	// Register the eventfd to epoll for read events
 	if err := r.AddRead(efd); err != nil {
-		Logger.Error("Failed to add eventfd to epoll", zap.Error(err))
+		log.Logger.Error("Failed to add eventfd to epoll", zap.Error(err))
 		return nil, err
 	}
 
 	// Register the listener to epoll for read events
 	if err := r.AddRead(lnFd); err != nil {
-		Logger.Error("Failed to add listener to epoll", zap.Error(err))
+		log.Logger.Error("Failed to add listener to epoll", zap.Error(err))
 		return nil, err
 	}
 
@@ -73,30 +74,30 @@ func (p *Poll) CloseGracefully() error {
 
 	// close the eventfd fd
 	if err := p.Delete(p.efd); err != nil {
-		Logger.Debug("Failed to delete eventfd from epoll", zap.Error(err))
+		log.Logger.Debug("Failed to delete eventfd from epoll", zap.Error(err))
 	}
 
 	if err := CloseFd(p.efd); err != nil {
-		Logger.Debug("Failed to close eventfd", zap.Error(err))
+		log.Logger.Debug("Failed to close eventfd", zap.Error(err))
 	}
 
 	// close the listener fd
 	if err := p.Delete(p.listenFD); err != nil {
-		Logger.Debug("Failed to delete listener from epoll", zap.Error(err))
+		log.Logger.Debug("Failed to delete listener from epoll", zap.Error(err))
 	}
 
 	if err := CloseFd(p.listenFD); err != nil {
-		Logger.Debug("Failed to close listener", zap.Error(err))
+		log.Logger.Debug("Failed to close listener", zap.Error(err))
 	}
 
 	// close all connections
 	if err := p.ClosAndClearAllFDs(); err != nil {
-		Logger.Debug("Failed to close connections", zap.Error(err))
+		log.Logger.Debug("Failed to close connections", zap.Error(err))
 	}
 
 	// close the epoll fd
 	if err := CloseFd(p.epollFd); err != nil {
-		Logger.Info("Failed to close epoll", zap.Error(err))
+		log.Logger.Info("Failed to close epoll", zap.Error(err))
 	}
 
 	return nil
@@ -120,10 +121,10 @@ func (p *Poll) poll() {
 		n, err := unix.EpollWait(p.epollFd, events, msec)
 		if n == 0 || (n < 0 &&
 			err == unix.EINTR) {
-			Logger.Warn("epoll wait timeout")
+			log.Logger.Warn("epoll wait timeout")
 			continue
 		} else if err != nil {
-			Logger.Error("epoll wait error", zap.Error(err))
+			log.Logger.Error("epoll wait error", zap.Error(err))
 			return
 		}
 
@@ -135,7 +136,7 @@ func (p *Poll) poll() {
 			case ErrSignalStopped:
 				return
 			default:
-				Logger.Error("Failed to process event", zap.Error(err))
+				log.Logger.Error("Failed to process event", zap.Error(err))
 				return
 			}
 		}
@@ -144,7 +145,7 @@ func (p *Poll) poll() {
 
 func (p *Poll) processEvent(fd int, ev *unix.EpollEvent) error {
 	if ev.Events&unix.EPOLLERR != 0 || ev.Events&unix.EPOLLHUP != 0 {
-		Logger.Debug("epoll error event for fd ", zap.Int("fd", fd))
+		log.Logger.Debug("epoll error event for fd ", zap.Int("fd", fd))
 
 		p.decrFd()
 
@@ -163,7 +164,7 @@ func (p *Poll) processEvent(fd int, ev *unix.EpollEvent) error {
 		if ev.Events&unix.EPOLLIN != 0 {
 			conn, ok := p.connPool[fd]
 			if !ok {
-				Logger.Error("connection not found")
+				log.Logger.Error("connection not found")
 				return fmt.Errorf("connection not found for fd %d", fd)
 			}
 			return p.rHandler.Read(conn)
@@ -173,7 +174,7 @@ func (p *Poll) processEvent(fd int, ev *unix.EpollEvent) error {
 
 			conn, ok := p.connPool[fd]
 			if !ok {
-				Logger.Error("connection not found")
+				log.Logger.Error("connection not found")
 				return fmt.Errorf("connection not found for fd %d", fd)
 			}
 
@@ -188,7 +189,7 @@ func (p *Poll) handleSignal(fd int) error {
 	var buf uint64
 	_, err := unix.Read(fd, (*(*[8]byte)(unsafe.Pointer(&buf)))[:])
 	if err != nil {
-		Logger.Error("Failed to read from event fd", zap.Error(err))
+		log.Logger.Error("Failed to read from event fd", zap.Error(err))
 		return nil
 	}
 	receivedSignal := pipeSignal(buf)
@@ -203,7 +204,7 @@ func (p *Poll) handleSignal(fd int) error {
 func (p *Poll) sendSignal(sig pipeSignal) error {
 	_, err := unix.Write(p.efd, (*(*[8]byte)(unsafe.Pointer(&sig)))[:])
 	if err != nil {
-		Logger.Error("Failed to write to event fd", zap.Error(err))
+		log.Logger.Error("Failed to write to event fd", zap.Error(err))
 	}
 	return err
 }
@@ -216,19 +217,19 @@ func (p *Poll) accept(fd int) error {
 		if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
 			return nil // This isn't necessarily an error, just no more connections to accept right now.
 		}
-		Logger.Error("accept error", zap.Error(err))
+		log.Logger.Error("accept error", zap.Error(err))
 		return fmt.Errorf("accept error: %w", err)
 	}
 
 	// set the socket to non-blocking mode
 	if err := unix.SetNonblock(connFd, true); err != nil {
-		Logger.Error("set nonblock error", zap.Error(err))
+		log.Logger.Error("set nonblock error", zap.Error(err))
 		return fmt.Errorf("set nonblock error for fd %d: %w", connFd, err)
 	}
 
 	// register the new connection to epoll for read events
 	if err := p.registerRead(connFd); err != nil {
-		Logger.Error("register read error", zap.Error(err))
+		log.Logger.Error("register read error", zap.Error(err))
 		return fmt.Errorf("register read error for fd %d: %w", connFd, err)
 	}
 
@@ -251,7 +252,7 @@ func (p *Poll) accept(fd int) error {
 	// increase the number of fds
 	p.incrFd()
 
-	Logger.Debug("new connection", zap.Int("fd", connFd))
+	log.Logger.Debug("new connection", zap.Int("fd", connFd))
 
 	return nil
 }
@@ -272,7 +273,7 @@ func (p *Poll) handleWrite(conn BufferedConn) error {
 	data := conn.DataToWrite()
 	n, err := p.writeRawToFd(fd, data)
 	if err != nil {
-		Logger.Error("write error", zap.Error(err))
+		log.Logger.Error("write error", zap.Error(err))
 		return fmt.Errorf("write error for fd %d: %w", fd, err)
 	}
 
@@ -282,7 +283,7 @@ func (p *Poll) handleWrite(conn BufferedConn) error {
 	if conn.Len() == 0 {
 		// All data was written. Deregister EPOLLOUT for this fd.
 		if err := p.deregisterWrite(fd); err != nil {
-			Logger.Error("failed to deregister write", zap.Error(err))
+			log.Logger.Error("failed to deregister write", zap.Error(err))
 			return fmt.Errorf("failed to deregister write for fd %d: %w", fd, err)
 		}
 	}
@@ -294,7 +295,7 @@ func (p *Poll) handleWrite(conn BufferedConn) error {
 func (p *Poll) writeRawToFd(fd int, data []byte) (n int, err error) {
 	n, err = unix.Write(fd, data)
 	if err != nil {
-		Logger.Error("write error", zap.Error(err))
+		log.Logger.Error("write error", zap.Error(err))
 		return n, err
 	}
 	return n, nil

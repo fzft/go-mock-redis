@@ -21,14 +21,14 @@ func New(id uint64) *RedisDb {
 }
 
 // GetExpire returns the expire time of the key
-func (db *RedisDb) GetExpire(obj *RedisObj) int64 {
+func (db *RedisDb) GetExpire(key string) int64 {
 
 	// if the key does not exist or has no associated expire, return -1
 	if db.expire.Empty() {
 		return -1
 	}
 
-	when, exist := db.expire.Get(obj.Key)
+	when, exist := db.expire.Get(key)
 	if !exist {
 		return -1
 	}
@@ -72,4 +72,8 @@ func (db *RedisDb) GenericDelete(key string) bool {
 	db.expire.Delete(key)
 
 	return true
+}
+
+func (db *RedisDb) LookupKey(key string) (*RedisObj, bool) {
+	return db.dict.Get(key)
 }

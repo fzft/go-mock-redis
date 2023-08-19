@@ -33,7 +33,6 @@ type RedisObj struct {
 	Type     ObjectType
 	Encoding EncodingType
 	LRU      int64
-	Key      string
 	Value    any
 }
 

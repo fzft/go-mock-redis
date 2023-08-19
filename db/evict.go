@@ -42,26 +42,9 @@ type Evictor interface {
 type EvictorHelper struct {
 }
 
-/**
-* The function may return additional info via reference, only if the
-* pointers to the respective arguments is not NULL. Certain fields are
-* populated only when C_ERR is returned:
-*
-*  'total'     total amount of bytes used.
-*              (Populated both for C_ERR and C_OK)
-*
-*  'logical'   the amount of memory used minus the slaves/AOF buffers.
-*              (Populated when C_ERR is returned)
-*
-*  'tofree'    the amount of memory that should be released
-*              in order to return back into the memory limits.
-*              (Populated when C_ERR is returned)
-*
-*  'level'     this usually ranges from 0 to 1, and reports the amount of
-*              memory currently used. May be > 1 if we are over the memory
-*              limit.
-*              (Populated both for C_ERR and C_OK)
- */
+// getMaxmemoryState
+// Returns the memory status of the system, including the total amount of
+// memory used, the amount of memory that should be freed in order to return
 func (eh EvictorHelper) getMaxmemoryState() (status MemoryStatus, ok bool) {
 
 	memUsed := getUsedMemory()

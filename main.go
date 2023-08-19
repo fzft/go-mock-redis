@@ -1,7 +1,12 @@
 package main
 
+import (
+	"github.com/fzft/go-mock-redis/log"
+	"github.com/fzft/go-mock-redis/node"
+)
+
 func main() {
-	InitLogger()
-	s := NewServer(":8080")
+	log.InitLogger()
+	s := node.NewServer(":8080")
 	s.Run()
 }

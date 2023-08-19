@@ -33,6 +33,7 @@ func getUsedMemory() int64 {
 	return atomic.LoadInt64(&usedMemory)
 }
 
+// estimateMemoryUsage roughly estimates the memory usage of a value, in bytes
 func estimateMemoryUsage(v any) int64 {
 	switch value := v.(type) {
 	case int:
