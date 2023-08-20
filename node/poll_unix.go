@@ -21,7 +21,7 @@ const (
 	readWriteEvents = readEvents | writeEvents
 )
 
-type pipeSignal uint64
+type pipeSignal uint8
 
 const (
 	SignalStop pipeSignal = 1

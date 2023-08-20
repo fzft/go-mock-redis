@@ -2,7 +2,6 @@ package node
 
 import (
 	"fmt"
-	"github.com/fzft/go-mock-redis/commands"
 	"github.com/fzft/go-mock-redis/db"
 )
 
@@ -101,16 +100,16 @@ const (
 )
 
 type Client struct {
-	id         uint64                   // client increment unique id
-	flags      ClientFlags              // client type flags
-	connection Conn                     // socket file descriptor
-	resp       int                      // resp protocol version. Can be 2 or 3
-	db         *db.RedisDb              // pointer to currently SELECTed DB
-	queryBuf   []byte                   // buffer for client query
-	queryPos   int                      // current position in query buffer
-	argc       int                      // number of arguments in query buffer
-	argv       [][]byte                 // arguments vector
-	relies     *db.List[commands.Reply] // list of replies to send to client
+	id         uint64          // client increment unique id
+	flags      ClientFlags     // client type flags
+	connection Conn            // socket file descriptor
+	resp       int             // resp protocol version. Can be 2 or 3
+	db         *db.RedisDb     // pointer to currently SELECTed DB
+	queryBuf   []byte          // buffer for client query
+	queryPos   int             // current position in query buffer
+	argc       int             // number of arguments in query buffer
+	argv       [][]byte        // arguments vector
+	replies    *db.List[Reply] // list of reply to send to client
 }
 
 func NewClient(id uint64, flags ClientFlags, connection Conn, resp int, rdb *db.RedisDb) *Client {
@@ -124,7 +123,7 @@ func NewClient(id uint64, flags ClientFlags, connection Conn, resp int, rdb *db.
 		queryPos:   0,
 		argc:       0,
 		argv:       make([][]byte, 0),
-		relies:     db.NewList[commands.Reply](),
+		replies:    db.NewList[Reply](),
 	}
 }
 
@@ -138,14 +137,14 @@ func (c *Client) GetID() uint64 {
  * -------------------------------------------------------------------------- */
 
 // AddReply add the object 'obj' string representation to the client output buffer.
-func (c *Client) AddReply(reply commands.Reply) {
+func (c *Client) AddReply(reply Reply) {
 	if !c.prepareClientToWrite() {
 		return
 	}
-	if reply.EncodedObject() {
+	if reply.EncodingObject() {
 		c.addReplyToBufferOrList(reply.Marshal())
-	} else if reply.Encoding == db.EncodingInt {
-		c.addReplyToBufferOrList([]byte(fmt.Sprintf("%d", reply.Value.(int64))))
+	} else if reply.Encoding() == db.EncodingInt {
+		c.addReplyToBufferOrList([]byte(fmt.Sprintf("%d", reply.Content().(int64))))
 	} else {
 		panic("Wrong reply encoding in AddReply() ")
 	}

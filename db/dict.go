@@ -7,9 +7,19 @@ import (
 	"reflect"
 )
 
-// HashTable is a hash table implementation
-// that uses separate chaining for collision resolution
-// and supports incremental rehashing, which allows us to resize the table without blocking operations.
+// hashtable provides a simple implementation of a hashtable with support for
+// incremental rehashing.
+//
+// The HashTable data structure supports basic operations such as Get, Set, Delete, etc.
+// To handle the case when the hash table becomes too full, it uses incremental rehashing
+// to migrate entries to a new, larger table without causing a significant performance drop
+// during the migration process.
+//
+// Important Notes:
+// - The rehashStep method is accessed within both the FindPositionForInsert and Set methods.
+//   This allows the HashTable to gradually migrate data to a larger table while still being
+//   able to serve other requests.
+//
 
 const (
 	loadFactor       = 0.7
@@ -47,20 +57,48 @@ func (h *HashTable[K, V]) Hash(key K, size int) int {
 }
 
 func (h *HashTable[K, V]) Set(key K, value V) {
+
+	defer func() {
+		// Start rehashing if load factor exceeded
+		if float64(h.Count)/float64(h.Size) > loadFactor {
+			h.startRehashing()
+		}
+	}()
+
 	// If we're rehashing, do one rehashing step
 	if h.RehashingIdx >= 0 {
 
-		// Check if the key exists in the new table
-		newIndex := h.Hash(key, h.RehashingSize)
-		for curr := h.RehashingTbl[newIndex]; curr != nil; curr = curr.Next {
-			if reflect.DeepEqual(curr.Key, key) {
-				h.IncreaseUsedMemory(key, value)
-				curr.Value = value
-				return
-			}
-		}
-
+		// NOTE: rehashStep is accessed both in FindPositionForInsert and Set methods.
 		h.rehashStep()
+
+		// if we're still rehashing, insert into the new table
+		if h.RehashingIdx >= 0 {
+			// Check if the key exists in the new table
+			newIndex := h.Hash(key, h.RehashingSize)
+			if h.RehashingTbl[newIndex] == nil {
+				entry := &Entry[K, V]{Key: key, Value: value, Next: nil}
+				h.RehashingTbl[newIndex] = entry
+				h.Count++
+				h.IncreaseUsedMemory(key, value)
+			} else {
+				curr := h.RehashingTbl[newIndex]
+				for curr != nil {
+					if reflect.DeepEqual(curr.Key, key) {
+						curr.Value = value
+						return
+					}
+					if curr.Next == nil {
+						entry := &Entry[K, V]{Key: key, Value: value, Next: nil}
+						curr.Next = entry
+						h.Count++
+						h.IncreaseUsedMemory(key, value)
+						return
+					}
+					curr = curr.Next
+				}
+			}
+			return // We should return after handling the RehashingTbl to avoid double insertion
+		}
 	}
 
 	index := h.Hash(key, h.Size)
@@ -87,10 +125,6 @@ func (h *HashTable[K, V]) Set(key K, value V) {
 		}
 	}
 
-	// Start rehashing if load factor exceeded
-	if float64(h.Count)/float64(h.Size) > loadFactor {
-		h.startRehashing()
-	}
 }
 
 func (h *HashTable[K, V]) startRehashing() {
@@ -175,12 +209,22 @@ func (h *HashTable[K, V]) deleteFromTable(key K, table []*Entry[K, V]) bool {
 }
 
 func (h *HashTable[K, V]) Get(key K) (V, bool) {
+	entry, exist := h.GetEntry(key)
+	if exist {
+		return entry.Value, true
+	} else {
+		var zero V
+		return zero, false
+	}
+}
+
+func (h *HashTable[K, V]) GetEntry(key K) (*Entry[K, V], bool) {
 	// If rehashing is ongoing, check the new table first
 	if h.RehashingIdx >= 0 {
 		newIndex := h.Hash(key, h.RehashingSize)
 		for curr := h.RehashingTbl[newIndex]; curr != nil; curr = curr.Next {
 			if reflect.DeepEqual(curr.Key, key) {
-				return curr.Value, true
+				return curr, true
 			}
 		}
 	}
@@ -189,12 +233,80 @@ func (h *HashTable[K, V]) Get(key K) (V, bool) {
 	index := h.Hash(key, h.Size)
 	for curr := h.Table[index]; curr != nil; curr = curr.Next {
 		if reflect.DeepEqual(curr.Key, key) {
-			return curr.Value, true
+			return curr, true
 		}
 	}
 
-	var zero V
-	return zero, false
+	return nil, false
+}
+
+// AddRaw adds a raw entry to the hash table, without checking for duplicates or resizing.
+// This is used for rehashing.
+func (h *HashTable[K, V]) AddRaw(key K) (*Entry[K, V], bool) {
+	return h.findPositionForInsert(key)
+}
+
+// findPositionForInsert finds the position within the hash table where the provided key should
+// be inserted. If the key exists, it returns nil and sets the 'existing' entry pointer, if provided.
+func (h *HashTable[K, V]) findPositionForInsert(key K) (*Entry[K, V], bool) {
+
+	defer func() {
+		if float64(h.Count)/float64(h.Size) > loadFactor {
+			h.startRehashing()
+		}
+	}()
+
+	entry := &Entry[K, V]{Key: key, Next: nil}
+
+	if h.RehashingIdx >= 0 {
+		// If rehashing is ongoing, perform a step before checking
+		h.rehashStep()
+
+		if h.RehashingIdx >= 0 {
+			// Check the rehashing table
+			newIndex := h.Hash(key, h.RehashingSize)
+			if h.RehashingTbl[newIndex] == nil {
+				h.RehashingTbl[newIndex] = entry
+				h.Count++
+				IncreaseUsedMemory(key)
+			} else {
+				// Check the chain for this hash slot
+				prev := h.RehashingTbl[newIndex]
+				for curr := prev; curr != nil; curr = curr.Next {
+					if reflect.DeepEqual(curr.Key, key) {
+						return curr, true // Key already exists in the rehashing table
+					}
+					if curr.Next == nil {
+						curr.Next = entry
+						h.Count++
+						IncreaseUsedMemory(key)
+					}
+					prev = curr
+				}
+			}
+		}
+	}
+
+	index := h.Hash(key, h.Size)
+	if h.Table[index] == nil {
+		h.Table[index] = entry
+		h.Count++
+		IncreaseUsedMemory(key)
+	} else {
+		curr := h.Table[index]
+		for curr != nil {
+			if reflect.DeepEqual(curr.Key, key) {
+				return curr, true // Key already exists in the main table
+			}
+			if curr.Next == nil {
+				curr.Next = entry
+				h.Count++
+				IncreaseUsedMemory(key)
+			}
+			curr = curr.Next
+		}
+	}
+	return entry, false
 }
 
 // Helper function to retrieve an entry from a specific table.
@@ -211,6 +323,24 @@ func (h *HashTable[K, V]) getFromTable(key K, table []*Entry[K, V]) (V, bool) {
 	}
 	var zero V
 	return zero, false
+}
+
+// SetVal ...
+func (h *HashTable[K, V]) SetVal(entry *Entry[K, V], val V) {
+	if entry == nil {
+		return
+	}
+	entry.Value = val
+	IncreaseUsedMemory(val)
+}
+
+// GetVal ...
+func (h *HashTable[K, V]) GetVal(entry *Entry[K, V]) V {
+	if entry == nil {
+		var zero V
+		return zero
+	}
+	return entry.Value
 }
 
 // Len returns the number of elements in the hash table

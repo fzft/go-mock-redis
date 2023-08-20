@@ -38,24 +38,24 @@ func NewLRU(db *RedisDb) *LRU {
 // lruClock obtain the current LRU clock
 // if the current resolution lower than the frequency we refresh the
 // LRU clock we return the precomputed value,otherwise we need to resort to a system call
-func (lru *LRU) lruClock(hz int, srvClock int64) int64 {
+func lruClock(hz int, srvClock int64) int64 {
 	var lruClock int64
 	if 1000/hz <= LRU_CLOCK_RESOLUTION {
 		lruClock = srvClock
 	} else {
-		lruClock = lru.getLRUClock()
+		lruClock = getLRUClock()
 	}
 	return lruClock
 }
 
-func (lru *LRU) getLRUClock() int64 {
+func getLRUClock() int64 {
 	return (mstime() / LRU_CLOCK_RESOLUTION) & LRU_CLOCK_MAX
 }
 
 // estimateObjectIdleTime given an object returns the min number of milliseconds the object was never
 // requested, using an approximated LRU algorithm.
 func (lru *LRU) estimateObjectIdleTime(hz int, srvClock int64, o *RedisObj) int64 {
-	lruClock := lru.lruClock(hz, srvClock)
+	lruClock := lruClock(hz, srvClock)
 	if lruClock >= o.LRU {
 		return (lruClock - o.LRU) * LRU_CLOCK_RESOLUTION
 	} else {

@@ -1,8 +1,7 @@
-package commands
+package node
 
 import (
 	"github.com/fzft/go-mock-redis/db"
-	"github.com/fzft/go-mock-redis/node"
 )
 
 type StrSetType int
@@ -22,12 +21,12 @@ const (
 
 // StrCmd handles string commands.
 type StrCmd struct {
-	c  *node.Client
+	c  *Client
 	db *db.RedisDb
 }
 
 // NewStrCmd returns a new StrCmd.
-func NewStrCmd(c *node.Client) *StrCmd {
+func NewStrCmd(c *Client) *StrCmd {
 	return &StrCmd{c: c}
 }
 
@@ -46,34 +45,58 @@ func NewStrCmd(c *node.Client) *StrCmd {
  *
  * If ok_reply is NULL "+OK" is used.
  * If abort_reply is NULL, "$-1" is used. */
-func (cmd *StrCmd) setGenericCommand(flags StrSetType, key string, val *db.RedisObj, expire uint64, uint int) Reply {
+func (cmd *StrCmd) setGenericCommand(flags StrSetType, key string, val *db.RedisObj, expire uint64, uint int) {
 
 	var (
-		milliseconds int64
+		milliseconds uint64
 		ok           bool
+		setkeyFlags  db.SetKeyType
 	)
 
 	if expire > 0 {
 		ok, milliseconds = cmd.getExpireMillisecondsOrReply(expire, flags, uint)
 		if !ok {
-			return Reply{}
+			return
 		}
 	}
 
-	_, exist := cmd.db.LookupKey(key)
+	_, exist := cmd.db.LookupKeyWrite(key)
 
 	if (flags&ObjSetXX != 0 && !exist) || (flags&ObjSetNX != 0 && exist) {
 		if !(flags&ObjSetGet != 0) {
-			cmd.c.AddReply(SharedNullReply)
+			//cmd.c.AddReply(SharedNullReply)
 		}
 		return
 	}
 
+	/* When expire is not NULL, we avoid deleting the TTL so it can be updated later instead of being deleted and then created again. */
+	if (flags&ObjSetKeepTTL) != 0 || expire > 0 {
+		setkeyFlags |= db.SetKeyKeepTTL
+	} // We don't set setkeyFlags to 0 in an else, because it might have other bits set previously.
+
+	if exist {
+		setkeyFlags |= db.SetKeyAlreadyExists
+	} else {
+		setkeyFlags |= db.SetKeyDoesNotExist
+	}
+
+	cmd.db.SetKey(key, val, setkeyFlags)
+	// TODO: notifyKeyspaceEvent(NOTIFY_STRING, "set", key, cmd.db.GetID())
+
+	if expire > 0 {
+		cmd.db.SetExpire(key, milliseconds)
+		// TODO: notifyKeyspaceEvent(NOTIFY_GENERIC, "expire", key, cmd.db.GetID())
+	}
+
+	if flags&ObjSetGet == 0 {
+		cmd.c.AddReply(SharedOkReply)
+	}
 }
 
-func (cmd *StrCmd) getExpireMillisecondsOrReply(expire uint64, flags StrSetType, uint int) (bool, int64) {
+func (cmd *StrCmd) getExpireMillisecondsOrReply(expire uint64, flags StrSetType, uint int) (bool, uint64) {
+	return false, 0
 }
 
 func (cmd *StrCmd) getGenericCommand() {
-
+	return
 }

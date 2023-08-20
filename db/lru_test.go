@@ -11,10 +11,10 @@ func TestEvictionPoolPopulate(t *testing.T) {
 	sampleDict := NewHashTable[string, *RedisObj](10)
 	keyDict := NewHashTable[string, *RedisObj](10)
 
-	obj1 := &RedisObj{Key: "key1", Value: "val1", LRU: 5}
-	obj2 := &RedisObj{Key: "key2", Value: "val2", LRU: 3}
-	obj3 := &RedisObj{Key: "key3", Value: "val3", LRU: 7}
-	obj4 := &RedisObj{Key: "key4", Value: "val4", LRU: 2}
+	obj1 := &RedisObj{Type: StringType, Value: "val1", LRU: 5}
+	obj2 := &RedisObj{Type: StringType, Value: "val2", LRU: 3}
+	obj3 := &RedisObj{Type: StringType, Value: "val3", LRU: 7}
+	obj4 := &RedisObj{Type: StringType, Value: "val4", LRU: 2}
 
 	keyDict.Set("key1", obj1)
 	keyDict.Set("key2", obj2)
@@ -44,10 +44,10 @@ func TestEvictionPoolReplaceMiddleSlot(t *testing.T) {
 	keyDict := NewHashTable[string, *RedisObj](10)
 
 	// Initially fill the eviction pool
-	obj1 := &RedisObj{Key: "key1", Value: "val1", LRU: 5}
-	obj2 := &RedisObj{Key: "key2", Value: "val2", LRU: 3}
-	obj3 := &RedisObj{Key: "key3", Value: "val3", LRU: 7}
-	obj4 := &RedisObj{Key: "key4", Value: "val4", LRU: 2}
+	obj1 := &RedisObj{Type: StringType, Value: "val1", LRU: 5}
+	obj2 := &RedisObj{Type: StringType, Value: "val2", LRU: 3}
+	obj3 := &RedisObj{Type: StringType, Value: "val3", LRU: 7}
+	obj4 := &RedisObj{Type: StringType, Value: "val4", LRU: 2}
 
 	keyDict.Set("key1", obj1)
 	keyDict.Set("key2", obj2)
@@ -60,7 +60,7 @@ func TestEvictionPoolReplaceMiddleSlot(t *testing.T) {
 	sampleDict.Set("key4", nil)
 
 	// Add a new key with an LRU that would be inserted in the middle of the eviction pool
-	obj5 := &RedisObj{Key: "key5", Value: "val5", LRU: 6}
+	obj5 := &RedisObj{Type: StringType, Value: "val5", LRU: 6}
 	keyDict.Set("key5", obj5)
 	sampleDict.Set("key5", nil)
 

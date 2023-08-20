@@ -109,3 +109,31 @@ func TestMemoryUsage(t *testing.T) {
 	// Assert memory usage after delete
 	assert.Equal(t, expectedMemoryAfterDelete, getUsedMemory(), "Memory usage after delete is incorrect")
 }
+
+func TestAddRaw(t *testing.T) {
+	// Create a new hash table
+	ht := NewHashTable[string, int](10)
+
+	// Test 1: Adding an entry to an empty table
+	entry, exists := ht.AddRaw("TestKey1")
+	assert.False(t, exists, "Key should not have already existed in the table.")
+	assert.Equal(t, "TestKey1", entry.Key, "Key was not correctly set.")
+
+	// Test 2: Adding a second entry
+	entry2, exists2 := ht.AddRaw("TestKey2")
+	assert.False(t, exists2, "Second key should not have already existed in the table.")
+	assert.Equal(t, "TestKey2", entry2.Key, "Key was not correctly set for second entry.")
+
+	// Test 3: Attempting to re-add the first key
+	entry3, exists3 := ht.AddRaw("TestKey1")
+	assert.True(t, exists3, "Re-added key should have already existed in the table.")
+	assert.Equal(t, "TestKey1", entry3.Key, "Re-added key should match original key.")
+
+	// Test 4: Ensure the hash table resizes when load factor is exceeded
+	// Assuming initial size is 10 and load factor is 0.7, table should resize after 7 inserts
+	for i := 0; i < 7; i++ {
+		key := fmt.Sprintf("Key%d", i)
+		_, _ = ht.AddRaw(key)
+	}
+	assert.Equal(t, 20, ht.Size, "Table did not resize after exceeding load factor.")
+}

@@ -69,7 +69,12 @@ func (l *List[T]) InsertNode(oldNode *ListNode[T], value T, after bool) error {
 			l.AddNodeTail(value)
 			return nil
 		}
-		node.Next, node.Prev, oldNode.Next, node.Next.Prev = oldNode.Next, oldNode, node, node
+		node.Prev = oldNode
+		node.Next = oldNode.Next
+		oldNode.Next = node
+		if node.Next != nil { // Ensure it's not the last node
+			node.Next.Prev = node
+		}
 	} else {
 		if oldNode.Prev == nil {
 			l.AddNodeHead(value)

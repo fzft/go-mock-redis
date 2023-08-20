@@ -61,3 +61,9 @@ func (eh EvictorHelper) getMaxmemoryState() (status MemoryStatus, ok bool) {
 
 	return status, false
 }
+
+// initObjectLRUOrLFU
+// TODO: LFU and SRV maxmemory strategies
+func initObjectLRUOrLFU(o *RedisObj) {
+	o.LRU = lruClock(100, 100)
+}
