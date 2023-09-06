@@ -36,6 +36,19 @@ type RedisObj struct {
 	Value    any
 }
 
+func NewRedisObj(tp ObjectType, encodingType EncodingType, Value any, lru int64) *RedisObj {
+	return &RedisObj{
+		Type:     tp,
+		Encoding: encodingType,
+		Value:    Value,
+		LRU:      lru,
+	}
+}
+
 func (ro *RedisObj) GetObjType() ObjectType {
 	return ro.Type
+}
+
+func (ro *RedisObj) EncodingObject() bool {
+	return ro.Encoding == EncodingRaw || ro.Encoding == EncodingEmbStr
 }

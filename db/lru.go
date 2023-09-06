@@ -18,20 +18,24 @@ const MEMORY_SAMPLES = 5
  * --------------------------------------------------------------------------*/
 
 type LRU struct {
-	ep [EVPOOL_SIZE]evictionPoolEntry
-	eh EvictorHelper
-	db *RedisDb
+	ep       [EVPOOL_SIZE]evictionPoolEntry
+	eh       EvictorHelper
+	db       *RedisDb
+	hz       int
+	lruClock int64
 }
 
-func NewLRU(db *RedisDb) *LRU {
+func NewLRU(db *RedisDb, hz int, lruClock int64) *LRU {
 	var ep [EVPOOL_SIZE]evictionPoolEntry
 	for i := 0; i < EVPOOL_SIZE; i++ {
 		ep[i] = evictionPoolEntry{}
 	}
 	return &LRU{
-		ep: ep,
-		eh: EvictorHelper{},
-		db: db,
+		ep:       ep,
+		eh:       EvictorHelper{},
+		db:       db,
+		hz:       hz,
+		lruClock: lruClock,
 	}
 }
 
@@ -92,7 +96,7 @@ func (lru *LRU) EvictionPoolPopulate(sampleDict *HashTable[string, *RedisObj], k
 
 	for _, key := range keys {
 		o, _ := keyDict.Get(key)
-		idle := lru.estimateObjectIdleTime(100, 100, o)
+		idle := lru.estimateObjectIdleTime(lru.hz, lru.lruClock, o)
 		// Find the first empty slot or the first slot that has a lower idle time than the current key.
 		k := 0
 		for k < EVPOOL_SIZE && lru.ep[k].Key != "" && lru.ep[k].Idle < idle {

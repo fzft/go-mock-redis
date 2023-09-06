@@ -1,59 +1,200 @@
 package node
 
-import "github.com/fzft/go-mock-redis/db"
-
-type Reply interface {
-	Content() any
-	Encoding() db.EncodingType
-	EncodingObject() bool
-	Marshal() []byte
-}
-
-type BaseReply struct {
-	content  string
-	encoding db.EncodingType
-}
-
-func (r BaseReply) Content() any {
-	return r.content
-}
-
-func (r BaseReply) Encoding() db.EncodingType {
-	return r.encoding
-}
-
-func (r BaseReply) Marshal() []byte {
-	switch r.encoding {
-	case db.EncodingRaw, db.EncodingEmbStr:
-		return []byte(r.Content().(string))
-	default:
-		panic("not implemented")
-	}
-}
-
-func (r BaseReply) EncodingObject() bool {
-	return r.encoding == db.EncodingRaw || r.encoding == db.EncodingEmbStr
-}
-
-type OkReply struct {
-	BaseReply
-}
-
-type NullReply struct {
-	BaseReply
-}
-
-type AbortReply struct {
-	BaseReply
-}
-
-var (
-	SharedOkReply    = OkReply{BaseReply{content: "OK", encoding: db.EncodingRaw}}
-	SharedAbortReply = AbortReply{BaseReply{content: "ABORT", encoding: db.EncodingRaw}}
-	SharedNullReply  = NullReply{BaseReply{content: "NULL", encoding: db.EncodingRaw}}
+import (
+	"fmt"
+	"github.com/fzft/go-mock-redis/db"
+	"github.com/fzft/go-mock-redis/resp"
 )
 
-type Command interface {
-	Set(key string, val *db.RedisObj, expire int64, uint int) Reply
-	GetExpireMillisecondsOrReply(key string) (int64, bool)
+var (
+	// Shared command responses
+
+	SharedOk         = createRawStringObject(fmt.Sprintf("OK%s", resp.CRLF))
+	SharedEmptyBulk  = createRawStringObject(fmt.Sprintf("%c0%s%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedZCone      = createRawStringObject(fmt.Sprintf("%c0%s", resp.TypeInteger, resp.CRLF))
+	SharedCone       = createRawStringObject(fmt.Sprintf("%c1%s", resp.TypeInteger, resp.CRLF))
+	SharedEmptyArray = createRawStringObject(fmt.Sprintf("%c0%s", resp.TypeArray, resp.CRLF))
+	SharedPong       = createRawStringObject(fmt.Sprintf("%cPONG%s", resp.TypeSimple, resp.CRLF))
+	SharedQueued     = createRawStringObject(fmt.Sprintf("%cQUEUED%s", resp.TypeSimple, resp.CRLF))
+	SharedEmptyScan  = createRawStringObject(fmt.Sprintf("%c2%s%c1%s0%s%c0%s", resp.TypeArray, resp.CRLF, resp.TypeBlob, resp.CRLF, resp.CRLF, resp.TypeArray, resp.CRLF))
+	SharedSpace      = createRawStringObject(fmt.Sprintf(" "))
+	SharedPlus       = createRawStringObject(fmt.Sprintf("%c", resp.TypeSimple))
+
+	// Shared command error responses
+
+	SharedWrongTypeErr   = createRawStringObject(fmt.Sprintf("%cWRONGTYPE Operation against a key holding the wrong kind of value%s", resp.TypeError, resp.CRLF))
+	SharedErr            = createRawStringObject(fmt.Sprintf("%cERR%s", resp.TypeError, resp.CRLF))
+	SharedNoKeyErr       = createRawStringObject(fmt.Sprintf("%cERR no such key%s", resp.TypeError, resp.CRLF))
+	SharedSyntaxErr      = createRawStringObject(fmt.Sprintf("%cERR syntax error%s", resp.TypeError, resp.CRLF))
+	SharedSomeObjErr     = createRawStringObject(fmt.Sprintf("%cERR source and destination objects are the same%s", resp.TypeError, resp.CRLF))
+	SharedOutoffRangeErr = createRawStringObject(fmt.Sprintf("%cERR index out of range%s", resp.TypeError, resp.CRLF))
+	SharedNoScriptErr    = createRawStringObject(fmt.Sprintf("%cNOSCRIPT No matching script. Please use EVAL.%s", resp.TypeError, resp.CRLF))
+	SharedLoadingErr     = createRawStringObject(fmt.Sprintf("%cLOADING Redis is loading the dataset in memory%s", resp.TypeError, resp.CRLF))
+	SharedSlowEvalErr    = createRawStringObject(fmt.Sprintf("%cBUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.%s", resp.TypeError, resp.CRLF))
+	SharedSlowScriptErr  = createRawStringObject(fmt.Sprintf("%cBUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.%s", resp.TypeError, resp.CRLF))
+	SharedNoAuthErr      = createRawStringObject(fmt.Sprintf("%cNOAUTH Authentication required.%s", resp.TypeError, resp.CRLF))
+	ShardOOMErr          = createRawStringObject(fmt.Sprintf("%cOOM command not allowed when used memory > 'maxmemory'.%s", resp.TypeError, resp.CRLF))
+	SharedExecAbortErr   = createRawStringObject(fmt.Sprintf("%cEXECABORT Transaction discarded because of previous errors.%s", resp.TypeError, resp.CRLF))
+	SharedBusyKeyErr     = createRawStringObject(fmt.Sprintf("%cBUSYKEY Target key name already exists.%s", resp.TypeError, resp.CRLF))
+
+	// The shared NULL depends on the protocol version, we just impl RESP3
+
+	// SharedNull3 for RESP3
+	SharedNull3 = createRawStringObject(fmt.Sprintf("%c%s", resp.TypeNull, resp.CRLF))
+
+	// SharedNullArray3 for RESP3
+	SharedNullArray3 = createRawStringObject(fmt.Sprintf("%c%s", resp.TypeNull, resp.CRLF))
+
+	// SharedEmptySet3 for RESP3
+	SharedEmptySet3 = createRawStringObject(fmt.Sprintf("%c0%s", resp.TypeSet, resp.CRLF))
+
+	SharedMessageBulk      = createRawStringObject(fmt.Sprintf("%c7%smessage%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedPmessageBulk     = createRawStringObject(fmt.Sprintf("%c8%spmessage%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedSubscribeBulk    = createRawStringObject(fmt.Sprintf("%c9%ssubscribe%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedUnsubscribeBulk  = createRawStringObject(fmt.Sprintf("%c11%sunsubscribe%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedSSubscribeBulk   = createRawStringObject(fmt.Sprintf("%c10%sssubscribe%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedSUnsubscribeBulk = createRawStringObject(fmt.Sprintf("%c12%ssunsubscribe%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedSMessageBulk     = createRawStringObject(fmt.Sprintf("%c8%ssmessage%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedPSubscribeBulk   = createRawStringObject(fmt.Sprintf("%c10%spsubscribe%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+	SharedPUnsubscribeBulk = createRawStringObject(fmt.Sprintf("%c12%spunsubscribe%s", resp.TypeBlob, resp.CRLF, resp.CRLF))
+
+	// Shared command names
+
+	SharedDel       = createRawStringObject("DEL")
+	SharedUnlink    = createRawStringObject("UNLINK")
+	SharedRpop      = createRawStringObject("RPOP")
+	SharedLPop      = createRawStringObject("LPOP")
+	SharedLPush     = createRawStringObject("LPUSH")
+	SharedRPopLPush = createRawStringObject("RPOPLPUSH")
+	SharedLMove     = createRawStringObject("LMOVE")
+	SharedBLMove    = createRawStringObject("BLMOVE")
+	SharedZPopMin   = createRawStringObject("ZPOPMIN")
+	SharedZPopMax   = createRawStringObject("ZPOPMAX")
+	SharedMulti     = createRawStringObject("MULTI")
+	SharedExec      = createRawStringObject("EXEC")
+	SharedHSet      = createRawStringObject("HSET")
+	SharedSRem      = createRawStringObject("SREM")
+	SharedXGroup    = createRawStringObject("XGROUP")
+	SharedXClaim    = createRawStringObject("XCLAIM")
+	SharedScript    = createRawStringObject("SCRIPT")
+	SharedReplConf  = createRawStringObject("REPLCONF")
+	SharedPersist   = createRawStringObject("PERSIST")
+	SharedSet       = createRawStringObject("SET")
+	SharedEval      = createRawStringObject("EVAL")
+
+	// Shared command argument
+
+	SharedLeft            = createRawStringObject("left")
+	SharedRight           = createRawStringObject("right")
+	SharedPXAT            = createRawStringObject("PXAT")
+	SharedTime            = createRawStringObject("TIME")
+	SharedRetryCount      = createRawStringObject("RETRYCOUNT")
+	SharedForce           = createRawStringObject("FORCE")
+	SharedJustID          = createRawStringObject("JUSTID")
+	SharedEntriesRead     = createRawStringObject("ENTRIESREAD")
+	SharedLastID          = createRawStringObject("LASTID")
+	SharedDefaultUsername = createRawStringObject("username")
+	SharedPing            = createRawStringObject("ping")
+	SharedSetId           = createRawStringObject("setid")
+	SharedKeepTTL         = createRawStringObject("KEEPTTL")
+	SharedABSTTL          = createRawStringObject("ABSTTL")
+	SharedLoad            = createRawStringObject("LOAD")
+	SharedCreateConsumer  = createRawStringObject("CREATECONSUMER")
+	SharedGetACK          = createRawStringObject("GETACK")
+	SharedSpecialAsterick = createRawStringObject("*")
+	SharedSpecialEqual    = createRawStringObject("=")
+	SharedRedacted        = createRawStringObject("(redacted)")
+)
+
+type RedisCommandArgs struct {
+	name    string
+	numArgs int
+}
+
+type RedisCommand interface {
+	Fullname() string
+	Proc() RedisCommand //Command implementation
+	DeclaredName() string
+	SubCommands() []RedisCommand
+	SubCommandsDict() *db.HashTable[string, RedisCommand]
+	Args() []*RedisCommandArgs
+}
+
+type redisCommandProc struct {
+}
+
+func (r *redisCommandProc) Fullname() string {
+	return ""
+}
+
+func (r *redisCommandProc) Proc() RedisCommand {
+	return nil
+}
+
+func (r *redisCommandProc) DeclaredName() string {
+	return ""
+}
+
+func (r *redisCommandProc) SubCommands() []RedisCommand {
+	return nil
+}
+
+func (r *redisCommandProc) SubCommandsDict() *db.HashTable[string, RedisCommand] {
+	return nil
+}
+
+func (r *redisCommandProc) Args() []*RedisCommandArgs {
+	return nil
+}
+
+type AskingCommand struct{}
+
+func (r *AskingCommand) Fullname() string {
+	return "asking"
+}
+
+func (r *AskingCommand) Proc() RedisCommand {
+	return nil
+}
+
+func (r *AskingCommand) DeclaredName() string {
+	return "ASKING"
+}
+
+func (r *AskingCommand) SubCommands() []RedisCommand {
+	return nil
+}
+
+func (r *AskingCommand) SubCommandsDict() *db.HashTable[string, RedisCommand] {
+	return nil
+}
+
+func (r *AskingCommand) Args() []*RedisCommandArgs {
+	return nil
+}
+
+type ClientCommand struct{}
+
+func (r *ClientCommand) Fullname() string {
+	return "client"
+}
+
+func (r *ClientCommand) Proc() RedisCommand {
+	return nil
+}
+
+func (r *ClientCommand) DeclaredName() string {
+	return "CLIENT"
+}
+
+func (r *ClientCommand) SubCommands() []RedisCommand {
+	return nil
+}
+
+func (r *ClientCommand) SubCommandsDict() *db.HashTable[string, RedisCommand] {
+	return nil
+}
+
+func (r *ClientCommand) Args() []*RedisCommandArgs {
+	return nil
 }

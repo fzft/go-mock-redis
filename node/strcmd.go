@@ -2,6 +2,12 @@ package node
 
 import (
 	"github.com/fzft/go-mock-redis/db"
+	"strings"
+)
+
+const (
+	UintSeconds = iota
+	UintMilliseconds
 )
 
 type StrSetType int
@@ -19,6 +25,13 @@ const (
 	ObjPERSIST               = 1 << 8 // Set if want to remove expire.
 )
 
+type CommandType uint8
+
+const (
+	CommandSet CommandType = iota
+	CommandGet
+)
+
 // StrCmd handles string commands.
 type StrCmd struct {
 	c  *Client
@@ -26,8 +39,48 @@ type StrCmd struct {
 }
 
 // NewStrCmd returns a new StrCmd.
-func NewStrCmd(c *Client) *StrCmd {
-	return &StrCmd{c: c}
+func NewStrCmd(c *Client, db *db.RedisDb) *StrCmd {
+	return &StrCmd{c: c, db: db}
+}
+
+// Set implements the SET command.
+func (cmd *StrCmd) Set() {
+	flags := ObjNoFlags
+	retFlags, expire, uint, ok := cmd.parseExtendedStringArgumentsOrReply(flags, CommandSet)
+	if !ok {
+		return
+	}
+	cmd.setGenericCommand(retFlags, cmd.c.argv[1].Value.(string), cmd.c.argv[2], expire, uint)
+}
+
+// SetNx implements the SETNX command.
+func (cmd *StrCmd) SetNx() {
+	cmd.setGenericCommand(ObjSetNX, cmd.c.argv[1].Value.(string), cmd.c.argv[2], nil, 0)
+}
+
+// SetEx implements the SETEX command.
+func (cmd *StrCmd) SetEx() {
+	cmd.setGenericCommand(ObjSetEX, cmd.c.argv[1].Value.(string), cmd.c.argv[3], cmd.c.argv[2], UintSeconds)
+}
+
+// PSetEx implements the PSETEX command.
+func (cmd *StrCmd) PSetEx() {
+	cmd.setGenericCommand(ObjSetPX, cmd.c.argv[1].Value.(string), cmd.c.argv[3], cmd.c.argv[2], UintMilliseconds)
+}
+
+// Get implements the GET command.
+func (cmd *StrCmd) Get() {
+	cmd.getGenericCommand()
+}
+
+func (cmd *StrCmd) getGenericCommand() bool {
+	o, exist := cmd.db.LookupKeyRead(cmd.c.argv[1].Value.(string))
+	if !exist {
+		cmd.c.AddReply(SharedNull3)
+		return false
+	}
+	cmd.c.AddReplyBulk(o)
+	return true
 }
 
 /* setGenericCommand function implements the SET operation with different
@@ -45,7 +98,7 @@ func NewStrCmd(c *Client) *StrCmd {
  *
  * If ok_reply is NULL "+OK" is used.
  * If abort_reply is NULL, "$-1" is used. */
-func (cmd *StrCmd) setGenericCommand(flags StrSetType, key string, val *db.RedisObj, expire uint64, uint int) {
+func (cmd *StrCmd) setGenericCommand(flags StrSetType, key string, val *db.RedisObj, expire *db.RedisObj, uint int) {
 
 	var (
 		milliseconds uint64
@@ -53,8 +106,8 @@ func (cmd *StrCmd) setGenericCommand(flags StrSetType, key string, val *db.Redis
 		setkeyFlags  db.SetKeyType
 	)
 
-	if expire > 0 {
-		ok, milliseconds = cmd.getExpireMillisecondsOrReply(expire, flags, uint)
+	if expire != nil {
+		milliseconds, ok = cmd.getExpireMillisecondsOrReply(expire, flags, uint)
 		if !ok {
 			return
 		}
@@ -64,13 +117,13 @@ func (cmd *StrCmd) setGenericCommand(flags StrSetType, key string, val *db.Redis
 
 	if (flags&ObjSetXX != 0 && !exist) || (flags&ObjSetNX != 0 && exist) {
 		if !(flags&ObjSetGet != 0) {
-			//cmd.c.AddReply(SharedNullReply)
+			cmd.c.AddReply(SharedNull3)
 		}
 		return
 	}
 
 	/* When expire is not NULL, we avoid deleting the TTL so it can be updated later instead of being deleted and then created again. */
-	if (flags&ObjSetKeepTTL) != 0 || expire > 0 {
+	if (flags&ObjSetKeepTTL) != 0 || expire == nil {
 		setkeyFlags |= db.SetKeyKeepTTL
 	} // We don't set setkeyFlags to 0 in an else, because it might have other bits set previously.
 
@@ -83,20 +136,149 @@ func (cmd *StrCmd) setGenericCommand(flags StrSetType, key string, val *db.Redis
 	cmd.db.SetKey(key, val, setkeyFlags)
 	// TODO: notifyKeyspaceEvent(NOTIFY_STRING, "set", key, cmd.db.GetID())
 
-	if expire > 0 {
+	if expire != nil {
 		cmd.db.SetExpire(key, milliseconds)
 		// TODO: notifyKeyspaceEvent(NOTIFY_GENERIC, "expire", key, cmd.db.GetID())
 	}
 
 	if flags&ObjSetGet == 0 {
-		cmd.c.AddReply(SharedOkReply)
+		cmd.c.AddReply(SharedOk)
 	}
 }
 
-func (cmd *StrCmd) getExpireMillisecondsOrReply(expire uint64, flags StrSetType, uint int) (bool, uint64) {
-	return false, 0
+/*
+ * The parseExtendedStringArgumentsOrReply() function performs the common validation for extended
+ * string arguments used in SET and GET command.
+ *
+ * Get specific commands - PERSIST/DEL
+ * Set specific commands - XX/NX/GET
+ * Common commands - EX/EXAT/PX/PXAT/KEEPTTL
+ *
+ * Function takes pointers to client, flags, unit, pointer to pointer of expire obj if needed
+ * to be determined and command_type which can be COMMAND_GET or COMMAND_SET.
+ *
+ * If there are any syntax violations C_ERR is returned else C_OK is returned.
+ *
+ * Input flags are updated upon parsing the arguments. Unit and expire are updated if there are any
+ * EX/EXAT/PX/PXAT arguments. Unit is updated to millisecond if PX/PXAT is set.
+ */
+func (cmd *StrCmd) parseExtendedStringArgumentsOrReply(flags StrSetType, commandType CommandType) (retFlags StrSetType, expire *db.RedisObj, uint int, ok bool) {
+	var j int
+	if commandType == CommandGet {
+		j = 2
+	} else {
+		j = 3
+	}
+
+	defer func() {
+		retFlags = flags
+	}()
+
+	for ; j < cmd.c.argc; j++ {
+		var (
+			next *db.RedisObj
+			opt  string
+		)
+		opt, ok = cmd.c.argv[j].Value.(string)
+		if !ok {
+			cmd.c.AddReply(SharedSyntaxErr)
+			return
+		}
+		if j == cmd.c.argc-1 {
+			next = nil
+		} else {
+			next = cmd.c.argv[j+1]
+		}
+
+		fmtOpt := strings.ToUpper(opt)
+		if fmtOpt == "NX" && flags&ObjSetXX == 0 && commandType == CommandSet {
+			flags |= ObjSetNX
+		} else if fmtOpt == "XX" && flags&ObjSetNX == 0 && commandType == CommandSet {
+			flags |= ObjSetXX
+		} else if fmtOpt == "GET" && commandType == CommandSet {
+			flags |= ObjSetGet
+		} else if strings.EqualFold(opt, "KEEPTTL") &&
+			flags&ObjPERSIST == 0 &&
+			flags&ObjSetEX == 0 &&
+			flags&ObjEXAT == 0 &&
+			flags&ObjSetPX == 0 &&
+			flags&ObjPXAT == 0 &&
+			commandType == CommandSet {
+			flags |= ObjSetKeepTTL
+		} else if strings.EqualFold(opt, "PERSIST") &&
+			flags&ObjSetEX == 0 &&
+			flags&ObjEXAT == 0 &&
+			flags&ObjSetPX == 0 &&
+			flags&ObjPXAT == 0 &&
+			flags&ObjSetKeepTTL == 0 &&
+			commandType == CommandGet {
+			flags |= ObjPERSIST
+		} else if fmtOpt == "EX" &&
+			flags&ObjSetKeepTTL == 0 &&
+			flags&ObjPERSIST == 0 &&
+			flags&ObjEXAT == 0 &&
+			flags&ObjPXAT == 0 &&
+			flags&ObjSetPX == 0 &&
+			next != nil {
+			flags |= ObjSetEX
+			expire = next
+			j++
+		} else if fmtOpt == "PX" &&
+			flags&ObjSetKeepTTL == 0 &&
+			flags&ObjPERSIST == 0 &&
+			flags&ObjSetEX == 0 &&
+			flags&ObjEXAT == 0 &&
+			flags&ObjPXAT == 0 &&
+			next != nil {
+			flags |= ObjSetPX
+			uint = UintMilliseconds
+			expire = next
+			j++
+		} else if fmtOpt == "EXAT" &&
+			flags&ObjSetKeepTTL == 0 &&
+			flags&ObjPERSIST == 0 &&
+			flags&ObjSetEX == 0 &&
+			flags&ObjPXAT == 0 &&
+			flags&ObjSetPX == 0 &&
+			next != nil {
+			flags |= ObjEXAT
+			expire = next
+			j++
+		} else if fmtOpt == "PXAT" &&
+			flags&ObjSetKeepTTL == 0 &&
+			flags&ObjPERSIST == 0 &&
+			flags&ObjSetEX == 0 &&
+			flags&ObjEXAT == 0 &&
+			flags&ObjSetPX == 0 &&
+			next != nil {
+			flags |= ObjPXAT
+			uint = UintMilliseconds
+			expire = next
+			j++
+		} else {
+			cmd.c.AddReply(SharedSyntaxErr)
+			return
+		}
+	}
+	ok = true
+	return
 }
 
-func (cmd *StrCmd) getGenericCommand() {
-	return
+// getExpireMillisecondsOrReply extracts the expire time in milliseconds from the expire obj.
+func (cmd *StrCmd) getExpireMillisecondsOrReply(expire *db.RedisObj, flags StrSetType, uint int) (uint64, bool) {
+	ret := getLongLongFromObject(expire)
+	if ret == 0 {
+		cmd.c.AddReplyError("invalid expire time in SETEX")
+		return 0, false
+	}
+	if (uint == UintSeconds && ret > 9223372036) || (uint == UintMilliseconds && ret > 9223372036854775) {
+		cmd.c.AddReplyErrorExpireTime()
+		return 0, false
+	}
+
+	if uint == UintSeconds {
+		ret *= 1000
+	}
+
+	return ret, true
 }

@@ -148,6 +148,14 @@ func (db *RedisDb) lookupKeyWriteWithFlags(key string, flags LookupType) (*Redis
 	return db.lookupKey(key, flags|LookupWrite)
 }
 
+func (db *RedisDb) LookupKeyRead(key string) (*RedisObj, bool) {
+	return db.lookupKeyReadWithFlags(key, LookupNone)
+}
+
+func (db *RedisDb) lookupKeyReadWithFlags(key string, flags LookupType) (*RedisObj, bool) {
+	return db.lookupKey(key, flags)
+}
+
 /* Lookup a key for read or write operations, or return NULL if the key is not
  * found in the specified DB. This function implements the functionality of
  * lookupKeyRead(), lookupKeyWrite() and their ...WithFlags() variants.

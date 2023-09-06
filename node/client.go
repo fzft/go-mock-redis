@@ -1,8 +1,12 @@
 package node
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/fzft/go-mock-redis/db"
+	"github.com/fzft/go-mock-redis/resp"
+	"strings"
+	"time"
 )
 
 type BlockType uint8
@@ -23,7 +27,8 @@ const (
 type ClientProtoType uint8
 
 const (
-	ClientProtoTypeInline ClientProtoType = iota
+	ClientProtoTypeUnknown ClientProtoType = iota
+	ClientProtoTypeInline                  = iota
 	ClientProtoTypeMultiBulk
 )
 
@@ -100,16 +105,26 @@ const (
 )
 
 type Client struct {
-	id         uint64          // client increment unique id
-	flags      ClientFlags     // client type flags
-	connection Conn            // socket file descriptor
-	resp       int             // resp protocol version. Can be 2 or 3
-	db         *db.RedisDb     // pointer to currently SELECTed DB
-	queryBuf   []byte          // buffer for client query
-	queryPos   int             // current position in query buffer
-	argc       int             // number of arguments in query buffer
-	argv       [][]byte        // arguments vector
-	replies    *db.List[Reply] // list of reply to send to client
+	id           uint64                 // client increment unique id
+	flags        ClientFlags            // client type flags
+	connection   Conn                   // socket file descriptor
+	resp         int                    // resp protocol version. Can be 2 or 3
+	db           *db.RedisDb            // pointer to currently SELECTed DB
+	queryBuf     []byte                 // buffer for client query
+	queryPos     int                    // current position in query buffer
+	argc         int                    // number of arguments in query buffer
+	argv         []*db.RedisObj         // arguments vector
+	argvLen      int                    // Size of argv array (may be more than argc)
+	argvLenSum   int                    // Sum of lengths of arguments
+	replies      *db.List[*db.RedisObj] // list of reply to send to client
+	cmd          RedisCommand           // command currently being processed
+	lastCmd      RedisCommand           // command currently being processed
+	realCmd      RedisCommand           // original command, if this is a replica
+	reqType      ClientProtoType
+	multiBulkLen int   // number of multi bulk arguments left to read
+	bulkLen      int   // length of bulk argument in multi bulk request
+	replAckTime  int64 // Replication ack time, if this is slave
+	slot         int   // The slot the client is executing against. Set to -1 if no slot is being used
 }
 
 func NewClient(id uint64, flags ClientFlags, connection Conn, resp int, rdb *db.RedisDb) *Client {
@@ -122,8 +137,8 @@ func NewClient(id uint64, flags ClientFlags, connection Conn, resp int, rdb *db.
 		queryBuf:   make([]byte, 0),
 		queryPos:   0,
 		argc:       0,
-		argv:       make([][]byte, 0),
-		replies:    db.NewList[Reply](),
+		argv:       make([]*db.RedisObj, 0),
+		replies:    db.NewList[*db.RedisObj](),
 	}
 }
 
@@ -137,18 +152,82 @@ func (c *Client) GetID() uint64 {
  * -------------------------------------------------------------------------- */
 
 // AddReply add the object 'obj' string representation to the client output buffer.
-func (c *Client) AddReply(reply Reply) {
+func (c *Client) AddReply(reply *db.RedisObj) {
 	if !c.prepareClientToWrite() {
 		return
 	}
 	if reply.EncodingObject() {
-		c.addReplyToBufferOrList(reply.Marshal())
-	} else if reply.Encoding() == db.EncodingInt {
-		c.addReplyToBufferOrList([]byte(fmt.Sprintf("%d", reply.Content().(int64))))
+		c.connection.Write([]byte(reply.Value.(string)))
+	} else if reply.Encoding == db.EncodingInt {
+		c.connection.Write([]byte(fmt.Sprintf("%d", reply.Value.(int64))))
 	} else {
 		panic("Wrong reply encoding in AddReply() ")
 	}
 
+}
+
+// addReplyProto this low level function just adds whatever protocol you send it to the
+// client
+func (c *Client) addReplyProto(proto []byte) {
+	if !c.prepareClientToWrite() {
+		return
+	}
+	c.connection.Write(proto)
+}
+
+// AddReplyBulk ...
+func (c *Client) AddReplyBulk(obj *db.RedisObj) {
+	c.addReplyBulkLen(obj)
+	c.AddReply(obj)
+	c.addReplyProto([]byte(resp.CRLF))
+}
+
+// AddReplyError ...
+func (c *Client) AddReplyError(err string) {
+	c.addReplyErrorLength(err)
+	c.afterErrorReply(err)
+}
+
+// addReplyErrorLength
+// low level function called by the AddReplyError...() functions
+// It emits the protocol for a redis error, in the form:
+// -ERRORCODE Error Message\r\n
+func (c *Client) addReplyErrorLength(err string) {
+	if len(err) > 0 && err[0] == '-' {
+		c.addReplyProto([]byte("-ERR"))
+	}
+	c.addReplyProto([]byte(err))
+	c.addReplyProto([]byte(resp.CRLF))
+}
+
+// AddReplyErrorExpireTime ...
+func (c *Client) AddReplyErrorExpireTime() {
+	c.addReplyErrorFormat(fmt.Sprintf("invalid expire time in '%s' command", c.cmd.Fullname()))
+}
+
+// addReplyErrorFormat
+func (c *Client) addReplyErrorFormat(err string) {
+	c.addReplyErrorLength(err)
+	c.afterErrorReply(err)
+}
+
+// afterErrorReply ...
+// TODO:
+func (c *Client) afterErrorReply(err string) {
+
+}
+
+// addReplyBulkLen
+/* Create the length prefix of a bulk reply, example: $2234 */
+func (c *Client) addReplyBulkLen(obj *db.RedisObj) {
+	l := stringObjectLen(obj)
+	c.addReplyLongLongWithPrefix('$', int64(l))
+}
+
+// addReplyLongLongWithPrefix
+func (c *Client) addReplyLongLongWithPrefix(prefix byte, ll int64) {
+	buf := ll2String(prefix, ll)
+	c.addReplyProto(buf)
 }
 
 // prepareClientToWrite
@@ -158,6 +237,7 @@ func (c *Client) AddReply(reply Reply) {
 // make sure to install the write handler in our event loop so that when the socket is writable new data gets written.
 // 2) If the client should not recv new data the function return false
 func (c *Client) prepareClientToWrite() bool {
+
 	// If it's the lua client we always return true.
 	if c.flags&ClientScript != 0 {
 		return true
@@ -187,6 +267,163 @@ func (c *Client) prepareClientToWrite() bool {
 	return true
 }
 
-func (c *Client) addReplyToBufferOrList(data []byte) {
+/* processInputBuffer This function is called every time, in the client structure 'c', there is
+* more query buffer to process, because we read more data from the socket
+* or because a client was blocked and later reactivated, so there could be
+* pending query buffer, already representing a full command, to process.
+* return false in case the client was freed during the processing */
+func (c *Client) processInputBuffer() bool {
+
+	for c.queryPos < len(c.queryBuf) {
+		if c.flags&ClientBlocked != 0 ||
+			c.flags&ClientPendingCommand != 0 {
+			break
+		}
+
+		/* CLIENT_CLOSE_AFTER_REPLY closes the connection once the reply is
+		 * written to the client. Make sure to not let the reply grow after
+		 * this flag has been set (i.e. don't process more commands).
+		 *
+		 * The same applies for clients we want to terminate ASAP. */
+		if c.flags&(ClientCloseAfterReply|ClientCloseASAP) != 0 {
+			break
+		}
+
+		if c.reqType == ClientProtoTypeUnknown {
+			if c.queryBuf[c.queryPos] == '*' {
+				c.reqType = ClientProtoTypeMultiBulk
+			} else {
+				c.reqType = ClientProtoTypeInline
+			}
+		} else {
+			panic("Unknown client reqtype")
+		}
+
+		if c.argc == 0 {
+			c.resetClient()
+		} else {
+
+		}
+	}
+
+	return false
+}
+
+// processInlineBuffer for the inline protocol instead of RESP
+// this function consume the client query buffer and creates a command ready
+// to be executed. or returns C_ERR if the client query buffer is not
+func (c *Client) processInlineBuffer() bool {
+
+	var linefeedChars = 1
+
+	// Search for end of line
+	p := bytes.IndexByte(c.queryBuf[c.queryPos:], '\n')
+
+	// Nothing to do without a \r\n
+	if p == -1 {
+		if len(c.queryBuf)-c.queryPos >= ProtoInlineMaxSize {
+			c.AddReplyError("Protocol error: too big inline request")
+			c.queryBuf = make([]byte, 0)
+			c.queryPos = 0
+		}
+	}
+
+	// Handle the \r\n case.
+	if p != 0 && c.queryBuf[p-1] == '\r' {
+		p--
+		linefeedChars++
+	}
+
+	queryLen := p - c.queryPos
+	aux := string(c.queryBuf[c.queryPos : c.queryPos+queryLen])
+
+	// Splitting the string into an array (slice in Go) of strings
+	argv := strings.Fields(aux)
+
+	// Check if argv could not be created, perhaps due to unbalanced quotes
+	// (In the real world, you'd actually try to detect this more rigorously)
+	if argv == nil {
+		// Do error handling, e.g., send a reply or set an error flag
+		c.AddReplyError("Protocol error: unbalanced quotes in request")
+		return false
+	}
+
+	if queryLen == 0 && c.flags == ClientSlave {
+		c.replAckTime = time.Now().Unix()
+	}
+
+	// TODO: ClientMaster
+
+	c.queryPos += queryLen + linefeedChars
+	argvLen := len(argv)
+
+	if argvLen > 0 {
+		c.argvLen = argvLen
+		c.argv = make([]*db.RedisObj, c.argvLen)
+		c.argvLenSum = 0
+	}
+
+	// create redis object for each argument
+	for _, arg := range argv {
+		newObj := createObject(db.StringType, arg) // Assuming CreateObject returns a new Redis object
+		c.argv = append(c.argv, newObj)
+		c.argc++
+		c.argvLenSum += len(arg)
+	}
+
+	return true
+}
+
+// resetClient prepare the client to process the next command
+func (c *Client) resetClient() {
+
+	var prevCmd RedisCommand
+
+	if c.cmd != nil {
+		prevCmd = c.cmd
+	}
+
+	c.reqType = ClientProtoTypeUnknown
+	c.multiBulkLen = 0
+	c.bulkLen = -1
+	c.slot = -1
+	c.flags &= ^ClientExecutingCommand
+
+	if c.flags&ClientMulti == 0 && prevCmd.Fullname() != "asking" {
+		c.flags &= ^ClientAsking
+	}
+
+	if c.flags&ClientMulti == 0 && prevCmd.Fullname() != "client" {
+		c.flags &= ^ClientTrackingCaching
+	}
+
+	c.flags &= ^ClientReplySkip
+	if c.flags&ClientReplySkipNext != 0 {
+		c.flags |= ClientReplySkip
+		c.flags &= ^ClientReplySkipNext
+	}
+}
+
+func (c *Client) processCommandAndResetClient() {
+
+}
+
+func (c *Client) processCommand() bool {
+	// TODO:script is timeout
+	clientReprocessingCommand := 0
+	if c.cmd != nil {
+		clientReprocessingCommand = 1
+	}
+
+	// Handle possible security attacks.
+	if strings.EqualFold(c.argv[0].Value.(string), "host:") || strings.EqualFold(c.argv[0].Value.(string), "post") {
+		return false
+	}
+
+	if clientReprocessingCommand != 0 {
+		c.cmd = c.realCmd
+	}
+
+	return false
 
 }

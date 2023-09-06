@@ -10,27 +10,6 @@ import (
 	"os"
 )
 
-// Conn is the interface for connection.
-type Conn interface {
-	// Read reads data from the connection.
-	Read() (data []byte, err error)
-
-	// Write writes data to the connection.
-	Write(data []byte) (err error)
-
-	// Close closes the connection.
-	Close() error
-
-	Fd() int
-	Ip() string
-}
-
-// BufferedConn is the interface for buffered connection.
-type BufferedConn interface {
-	Conn
-	Buffer
-}
-
 type DefaultBufferedConn struct {
 	fd        int
 	ip        string

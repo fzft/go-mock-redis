@@ -7,7 +7,7 @@ import (
 
 func TestEvictionPoolPopulate(t *testing.T) {
 	// Setup
-	lru := NewLRU(New(0))
+	lru := NewLRU(New(0), 0, 100)
 	sampleDict := NewHashTable[string, *RedisObj](10)
 	keyDict := NewHashTable[string, *RedisObj](10)
 
@@ -39,7 +39,7 @@ func TestEvictionPoolPopulate(t *testing.T) {
 
 func TestEvictionPoolReplaceMiddleSlot(t *testing.T) {
 	// Setup
-	lru := NewLRU(New(0))
+	lru := NewLRU(New(0), 0, 100)
 	sampleDict := NewHashTable[string, *RedisObj](10)
 	keyDict := NewHashTable[string, *RedisObj](10)
 
