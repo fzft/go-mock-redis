@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const ConfigRunIdSize = 40
+
 type BlockType uint8
 
 const (
@@ -60,15 +62,15 @@ const (
 )
 
 const (
-	ClientPendingWrite     ClientFlags = 1 << (21 + iota) // Client has output to send but a write handler is yet not installed.
-	ClientReplyOff                                        // Don't send replies to client.
-	ClientReplySkipNext                                   // Set CLIENT_REPLY_SKIP_NEXT to skip next reply
-	ClientReplySkip                                       // Don't send just this reply.
-	ClientLuaDebug                                        // Run EVAL in debug mode.
-	ClientLuaDebugSync                                    // Run EVAL in debug mode but don't start the script if the debugger is not attached.
-	ClientModule                                          // Non connected client used by module API clients.
-	ClientProtected                                       // Client should not be freed for now.
-	ClientExecutingCommand                                /**Indicates that the client is currently in the process of handling
+	ClientPendingWrite  ClientFlags = 1 << (21 + iota) // Client has output to send but a write handler is yet not installed.
+	ClientReplyOff                                     // Don't send replies to client.
+	ClientReplySkipNext                                // Set CLIENT_REPLY_SKIP_NEXT to skip next reply
+	ClientReplySkip                                    // Don't send just this reply.
+	ClientLuaDebug                                     // Run EVAL in debug mode.
+	ClientLuaDebugSync                                 // Run EVAL in debug mode but don't start the script if the debugger is not attached.
+	ClientModule                                       // Non connected client used by module API clients.
+	ClientProtected                                    // Client should not be freed for now.
+	ClientExecutingCommand                             /**Indicates that the client is currently in the process of handling
 		a command. usually this will be marked only during call()
 	however, blocked clients might have this flag kept until they will try to reprocess the command **/
 	ClientPendingCommand // Indicates the client has fully parsed command already for execution
@@ -121,10 +123,23 @@ type Client struct {
 	lastCmd      RedisCommand           // command currently being processed
 	realCmd      RedisCommand           // original command, if this is a replica
 	reqType      ClientProtoType
-	multiBulkLen int   // number of multi bulk arguments left to read
-	bulkLen      int   // length of bulk argument in multi bulk request
-	replAckTime  int64 // Replication ack time, if this is slave
-	slot         int   // The slot the client is executing against. Set to -1 if no slot is being used
+	multiBulkLen int // number of multi bulk arguments left to read
+	bulkLen      int // length of bulk argument in multi bulk request
+	slot         int // The slot the client is executing against. Set to -1 if no slot is being used
+
+	duration int64 // current command duration. Used for measuring latency of blocking commands
+
+	readReplOff int64 // Read replication offset if this is a master.
+	replOff     int64 // Applied replication offset if this is a master.
+	replApplied int64 // Applied replication data count in querybuf, if this is a replica.
+	replAckOff  int64 // Replication ack offset, if this is a replica.
+	replAOFOff  int64 // AOF offset of the last fsync(), if this is my slave.
+	replAckTime int64 // Replication ack time, if this is slave
+
+	replId        [ConfigRunIdSize + 1]string // Master replication ID (if master)
+	mState        *MultiState                 // MULTI/EXEC state
+	authenticated bool                        // Needed when the default user requires auth.
+
 }
 
 func NewClient(id uint64, flags ClientFlags, connection Conn, resp int, rdb *db.RedisDb) *Client {
@@ -140,6 +155,56 @@ func NewClient(id uint64, flags ClientFlags, connection Conn, resp int, rdb *db.
 		argv:       make([]*db.RedisObj, 0),
 		replies:    db.NewList[*db.RedisObj](),
 	}
+}
+
+/* Call is the core of redis execution of a command
+* the following flags can be passed:
+* CmdCallNone        No flags.
+* CmdCallPROPAGATEAOF   Append command to AOF if it modified the dataset
+*                          or if the client flags are forcing propagation.
+* CMD_CALL_PROPAGATE_REPL  Send command to slaves if it modified the dataset
+*                          or if the client flags are forcing propagation.
+* CMD_CALL_PROPAGATE   Alias for PROPAGATE_AOF|PROPAGATE_REPL.
+* CMD_CALL_FULL        Alias for SLOWLOG|STATS|PROPAGATE.
+*
+* The exact propagation behavior depends on the client flags.
+* Specifically:
+ */
+func (c *Client) Call(flags int) {
+	c.cmd.Proc()
+}
+
+// rejectCommand used when a command that is ready for execution needs to be rejected
+func (c *Client) rejectCommand(reply *db.RedisObj) {
+	c.duration = 0
+	if c.cmd != nil {
+		c.cmd.SetRejectedCalls(c.cmd.GetRejectedCalls() + 1)
+		if c.cmd != nil && c.cmd.Fullname() == "ExecCommand" {
+			c.execCommandAbort(reply.Value.(string))
+		} else {
+			c.addReplyErrorObject(reply)
+		}
+	}
+}
+
+// rejectCommandStr used when a command that is ready for execution needs to be rejected
+func (c *Client) rejectCommandStr(reply string) {
+
+	c.duration = 0
+	if c.cmd != nil {
+		c.cmd.SetRejectedCalls(c.cmd.GetRejectedCalls() + 1)
+		if c.cmd != nil && c.cmd.Fullname() == "ExecCommand" {
+			c.execCommandAbort(reply)
+		} else {
+			c.addReplyErrorStr(reply)
+		}
+	}
+}
+
+func (c *Client) rejectCommandFormat(fmtstr string, a ...string) {
+	s := fmt.Sprintf(fmtstr, a)
+	s = mapChars(s, "\r\n", "  ")
+	c.rejectCommandStr(s)
 }
 
 func (c *Client) GetID() uint64 {
@@ -211,10 +276,21 @@ func (c *Client) addReplyErrorFormat(err string) {
 	c.afterErrorReply(err)
 }
 
+// addReplyErrorObject
+func (c *Client) addReplyErrorObject(err *db.RedisObj) {
+	c.AddReply(err)
+	c.afterErrorReply(err.Value.(string))
+}
+
+// addReplyErrorStr
+func (c *Client) addReplyErrorStr(err string) {
+	c.addReplyErrorLength(err)
+	c.afterErrorReply(err)
+}
+
 // afterErrorReply ...
 // TODO:
 func (c *Client) afterErrorReply(err string) {
-
 }
 
 // addReplyBulkLen
@@ -289,6 +365,7 @@ func (c *Client) processInputBuffer() bool {
 			break
 		}
 
+		// Determine request type if unknown.
 		if c.reqType == ClientProtoTypeUnknown {
 			if c.queryBuf[c.queryPos] == '*' {
 				c.reqType = ClientProtoTypeMultiBulk
@@ -302,11 +379,41 @@ func (c *Client) processInputBuffer() bool {
 		if c.argc == 0 {
 			c.resetClient()
 		} else {
-
+			// we are finally ready to execute the command
+			if err := c.processCommandAndResetClient(); err != nil {
+				/* If the client is no longer valid, we avoid exiting this
+				 * loop and trimming the client buffer later. So we return
+				 * ASAP in that case. */
+				return false
+			}
 		}
 	}
 
-	return false
+	if c.flags&ClientMaster != 0 {
+		/* If the client is a master, trim the querybuf to repl_applied,
+		 * since master client is very special, its querybuf not only
+		 * used to parse command, but also proxy to sub-replicas.
+		 *
+		 * Here are some scenarios we cannot trim to qb_pos:
+		 * 1. we don't receive complete command from master
+		 * 2. master client blocked cause of client pause
+		 * 3. io threads operate read, master client flagged with CLIENT_PENDING_COMMAND
+		 *
+		 * In these scenarios, qb_pos points to the part of the current command
+		 * or the beginning of next command, and the current command is not applied yet,
+		 * so the repl_applied is not equal to qb_pos. */
+		if c.replApplied > 0 {
+			c.queryBuf = c.queryBuf[c.replApplied:]
+			c.queryPos = int(c.replApplied)
+			c.replApplied = 0
+		}
+	} else if c.queryPos > 0 {
+		// Trim to pos.
+		c.queryBuf = c.queryBuf[c.queryPos:]
+		c.queryPos = 0
+	}
+
+	return true
 }
 
 // processInlineBuffer for the inline protocol instead of RESP
@@ -404,15 +511,19 @@ func (c *Client) resetClient() {
 	}
 }
 
-func (c *Client) processCommandAndResetClient() {
+func (c *Client) processCommandAndResetClient() error {
+	if c.processCommand() {
 
+	}
 }
 
+// processCommand if this function gets called we already read a whole
+// command , arguments are in c.argv/argc fields
 func (c *Client) processCommand() bool {
 	// TODO:script is timeout
-	clientReprocessingCommand := 0
+	var clientReprocessingCommand bool
 	if c.cmd != nil {
-		clientReprocessingCommand = 1
+		clientReprocessingCommand = true
 	}
 
 	// Handle possible security attacks.
@@ -420,10 +531,158 @@ func (c *Client) processCommand() bool {
 		return false
 	}
 
-	if clientReprocessingCommand != 0 {
-		c.cmd = c.realCmd
+	// Now lookup the command and check ASAP about trivial error conditions
+	// such as wrong arity, bad command name and so forth.
+	// in case of error the function returns early
+	if !clientReprocessingCommand {
+		c.cmd = c.lookupCommand(c.argv, c.argc)
+		c.lastCmd = c.cmd
+		c.realCmd = c.cmd
+		if err, ok := c.commandCheckExistence(); !ok {
+			c.rejectCommandStr(err)
+			return true
+		}
+
+		if err, ok := c.commandCheckArity(); !ok {
+			c.rejectCommandStr(err)
+			return true
+		}
+		//check if the command is marked as protected and the relevant configuration allows it
+		if c.cmd.Flags()&CmdProtected != 0 {
+			if c.cmd.Fullname() == "debugCommand" || c.cmd.Fullname() == "module" {
+				var cmdEnable, cmdName string
+				if c.cmd.Fullname() == "debugCommand" {
+					cmdName = "DEBUG"
+					cmdEnable = "enable-debug-command"
+				} else {
+					cmdName = "MODULE"
+					cmdEnable = "enable-module-command"
+				}
+				c.rejectCommandFormat("%s command not allowed. If the %s option is set to \"local\" you can run it from a local connection, otherwise you need to set this option in the configuration file, and then restart the server.", cmdName, cmdEnable)
+				return true
+			}
+		}
 	}
+
+	cmdFlags := c.cmd.Flags()
+	isReadCmd := cmdFlags&CmdReadOnly != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdReadOnly != 0)
+	isWriteCmd := cmdFlags&CmdWrite != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdWrite != 0)
+	isDenyOOMCmd := cmdFlags&CmdDenyOOM != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdDenyOOM != 0)
+	isDenyStableCmd := cmdFlags&CmdStale != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdStale != 0)
+	isDenyLoadingCmd := cmdFlags&CmdLoading != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdLoading != 0)
+	isMayReplCmd := cmdFlags&(CmdWrite|CmdMayReplicate) != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&(CmdWrite|CmdMayReplicate) != 0)
+	isDenyAsyncLoadingCmd := cmdFlags&CmdNoAsyncLoading != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdNoAsyncLoading != 0)
+	isObeyClient := c.mustObeyClient()
+
+	if c.authRequired() {
+		/* AUTH and HELLO and no auth commands are valid even in
+		 * non-authenticated state. */
+		if c.cmd.Flags()&CmdNoAuth == 0 {
+			c.rejectCommand(SharedNoAuthErr)
+			return true
+		}
+	}
+
+	if c.flags&ClientMulti != 0 && c.cmd.Flags() == CmdNoMulti {
+		c.rejectCommandFormat("Command not allowed inside a transaction")
+		return true
+	}
+
+	// check if the user can run this command according to the current Acls
 
 	return false
 
+}
+
+// AuthRequired check the user is authenticated. this check is skipped in case
+// the default user is flagged as "nopass" and the client is authenticated
+func (c *Client) authRequired() bool {
+	return (!(defaultUser.flags&UserFlagNoPass == 0 || defaultUser.flags&UserFlagDisabled != 0)) && !c.authenticated
+}
+
+func (c *Client) mustObeyClient() bool {
+	return c.flags&ClientMaster == 0
+}
+
+// commandCheckExistence
+func (c *Client) commandCheckExistence() (string, bool) {
+	if c.cmd != nil {
+		return "", true
+	}
+
+	var err string
+	if c.isContainerCommandBySds(c.argv[0].Value.(string)) {
+		// if we can't find the command, but argv[0] by it self is a command
+		// it means we're dealing with a invalid subcommand. Print Help
+		cmdStr := strings.ToUpper(c.argv[0].Value.(string))
+		err = fmt.Sprintf("Unknown subcommand or wrong number of arguments for '%s'. Try CLIENT HELP.", cmdStr)
+	} else {
+		args := ""
+		limit := 128
+		for _, arg := range c.argv[1:] {
+			remaining := limit - len(args)
+			if remaining <= 0 {
+				break
+			}
+			fragment := fmt.Sprintf("'%.*s' ", remaining, arg)
+			args += fragment
+		}
+		err = fmt.Sprintf("unknown command '%.128s', with args beginning with: %s", c.argv[0], args)
+	}
+
+	err = mapChars(err, "\r\n", "  ")
+	return err, false
+}
+
+// commandCheckArity Check if c.args is valid for c.cmd, fill 'error' details in case it is not.
+func (c *Client) commandCheckArity() (string, bool) {
+	if (c.cmd == nil && c.cmd.Arity() > 0 && c.cmd.Arity() != c.argc) || (c.argc < -c.cmd.Arity()) {
+		return fmt.Sprintf("wrong number of arguments for '%s' command", c.cmd.Fullname()), false
+	}
+	return "", true
+}
+
+func (c *Client) isContainerCommandBySds(s string) bool {
+	baseCmd, exist := server.commands.Get(s)
+	if exist && baseCmd.SubCommands() != nil {
+		return true
+	}
+	return false
+}
+
+// lookupCommand
+func (c *Client) lookupCommand(argv []*db.RedisObj, argc int) RedisCommand {
+	return c.lookupCommandLogic(server.commands, argv, argc, false)
+
+}
+
+// lookupCommandLogic lookup a command by argv and argc
+// if strict is not 0 we expect argc to be exact `strict` should be used every time we want to look up a command name
+// rather than to find the command a user requested to execute
+func (c *Client) lookupCommandLogic(commands *db.HashTable[string, RedisCommand], argv []*db.RedisObj, argc int, strict bool) RedisCommand {
+
+	var hasSubCommands bool
+	baseCmd, exist := commands.Get(argv[0].Value.(string))
+	if exist && baseCmd.SubCommands() != nil {
+		hasSubCommands = true
+	}
+
+	if argc == 1 || !hasSubCommands {
+		if strict && argc != 1 {
+			return nil
+		}
+		return baseCmd
+	} else {
+
+		if strict && argc != 2 {
+			return nil
+		}
+		return c.lookupSubCommand(baseCmd, argv[1].Value.(string))
+	}
+}
+
+// lookupSubCommand
+func (c *Client) lookupSubCommand(baseCmd RedisCommand, sub string) RedisCommand {
+	// TODO: lookup sub command
+	return nil
 }

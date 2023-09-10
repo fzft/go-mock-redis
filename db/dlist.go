@@ -107,3 +107,36 @@ func (l *List[T]) RemoveNode(node *ListNode[T]) error {
 func (l *List[T]) Len() int {
 	return l.Length
 }
+
+// NewListIterator initializes a new ListIter
+func (l *List[T]) NewListIterator(direction int) *ListIter[T] {
+	var start *ListNode[T]
+	if direction == DIRECTION_HEAD {
+		start = l.Head
+	} else {
+		start = l.Tail
+	}
+	return &ListIter[T]{Next: start, Direction: direction}
+}
+
+// NextNode returns the next node in the list as pointed to by the iterator
+func (iter *ListIter[T]) NextNode() *ListNode[T] {
+	node := iter.Next
+	if node != nil {
+		if iter.Direction == DIRECTION_HEAD {
+			iter.Next = node.Next
+		} else {
+			iter.Next = node.Prev
+		}
+	}
+	return node
+}
+
+// Rewind resets the iterator to the head of the list
+func (iter *ListIter[T]) Rewind(l *List[T]) {
+	if iter.Direction == DIRECTION_HEAD {
+		iter.Next = l.Head
+	} else {
+		iter.Next = l.Tail
+	}
+}

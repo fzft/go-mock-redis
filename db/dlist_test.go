@@ -75,3 +75,18 @@ func TestRemoveNode(t *testing.T) {
 	assert.Equal(t, 10, list.Head.Value)
 	assert.Equal(t, 10, list.Tail.Value)
 }
+
+func TestListIteration(t *testing.T) {
+	list := NewList[int]()
+	list.AddNodeTail(1)
+	list.AddNodeTail(2)
+	list.AddNodeTail(3)
+
+	iter := list.NewListIterator(DIRECTION_HEAD)
+	var values []int
+
+	for node := iter.NextNode(); node != nil; node = iter.NextNode() {
+		values = append(values, node.Value)
+	}
+
+}

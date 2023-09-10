@@ -11,7 +11,11 @@ import (
 	"syscall"
 )
 
-var server *Server
+const UserCommandBitsCount = 1024
+
+var server *RedisServer
+var users *db.RaxTree[*User]
+var defaultUser *User
 
 const (
 	ProtoIOLen           = 1024 * 16
@@ -29,7 +33,7 @@ const (
 
 const MaxFD int64 = 1024
 
-type Server struct {
+type RedisServer struct {
 
 	// General
 	pid            int    // server pid
@@ -64,13 +68,13 @@ type Server struct {
 	logFile string // Path of log file
 }
 
-func NewServer(port int) *Server {
-	return &Server{
+func NewServer(port int) *RedisServer {
+	return &RedisServer{
 		port: port,
 	}
 }
 
-func (s *Server) Run() error {
+func (s *RedisServer) Run() error {
 	sigCh := make(chan os.Signal)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
@@ -97,7 +101,7 @@ func (s *Server) Run() error {
 	return nil
 }
 
-func (s *Server) SetHandler(handler ReaderHandler) {
+func (s *RedisServer) SetHandler(handler ReaderHandler) {
 	s.handler = handler
 }
 

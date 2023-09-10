@@ -6,6 +6,64 @@ import (
 	"github.com/fzft/go-mock-redis/resp"
 )
 
+type CommandFlags uint64
+
+const (
+	CmdWrite CommandFlags = 1 << iota
+	CmdReadOnly
+	CmdDenyOOM
+	CmdModule // Command exported by module.
+	CmdAdmin
+	CmdPubSub
+	CmdNoScript
+	_
+	CmdBlocking // Has potential to block.
+	CmdLoading
+	CmdStale
+	CmdSkipMonitor
+	CmdSkipSlowLog
+	CmdAsking
+	CmdFast
+	CmdNoAuth
+	CmdMayReplicate
+	CmdSentinel
+	CmdOnlySentinel
+	CmdNoMandatoryKeys
+	CmdProtected
+	CmdModuleGetKeys   // Use the modules getkeys interface.
+	CmdModuleNoCluster // Deny on Redis Cluster.
+	CmdNoAsyncLoading
+	CmdNoMulti
+	CmdMovableKeys // The legacy range spec doesn't cover all keys. Populated by populateCommandLegacyRangeSpec.
+	_
+	CmdAllowBusy
+	CmdModuleGetChannels // Use the modules getchannels interface.
+	CmdTouchesArbitraryKeys
+)
+
+type RedisCommandGroup uint8
+
+const (
+	RedisCommandGroupGeneric RedisCommandGroup = iota
+	RedisCommandGroupString
+	RedisCommandGroupList
+	RedisCommandGroupSet
+	RedisCommandGroupSortedSet
+	RedisCommandGroupHash
+	RedisCommandGroupPubSub
+	RedisCommandGroupTransaction
+	RedisCommandGroupConnection
+	RedisCommandGroupServer
+	RedisCommandGroupScripting
+	RedisCommandGroupHyperLogLog
+	RedisCommandGroupCluster
+	RedisCommandGroupSentinel
+	RedisCommandGroupGeo
+	RedisCommandGroupStream
+	RedisCommandGroupBitmap
+	RedisCommandGroupModule
+)
+
 var (
 	// Shared command responses
 
@@ -106,95 +164,82 @@ var (
 	SharedRedacted        = createRawStringObject("(redacted)")
 )
 
+type MultiCmd struct {
+	argv []*db.RedisObj
+	argc int
+	cmd  RedisCommand
+}
+
+type MultiState struct {
+	commands []*MultiCmd // Array of commands in MULTI/EXEC context
+	cmdFlags CommandFlags
+}
+
 type RedisCommandArgs struct {
 	name    string
 	numArgs int
 }
 
+type CommandHistory struct {
+	since   string
+	changes string
+}
+
+type RedisCommandProc func(c *Client) error
+
+var ExecCommand RedisCommandProc = func(c *Client) error {
+	return nil
+}
+
 type RedisCommand interface {
-	Fullname() string
-	Proc() RedisCommand //Command implementation
+	Proc() RedisCommandProc //Command implementation
 	DeclaredName() string
+	Group() RedisCommandGroup
+	History() []*CommandHistory
 	SubCommands() []RedisCommand
 	SubCommandsDict() *db.HashTable[string, RedisCommand]
 	Args() []*RedisCommandArgs
+	Arity() int
+	ACLCategories() uint64
+	Flags() CommandFlags
+
+	// Runtime populated data
+
+	Id() uint64 /* Command id,this is a progressive number starting from 0, and is used in order to check
+	ACLs. A connection is able to execute a given command if the user associated to the connection*/
+
+	MicroSeconds() int64
+	GetCalls() int64
+	SetCalls(int64)
+
+	GetRejectedCalls() int64
+	SetRejectedCalls(int64)
+
+	GetFailedCalls() int64
+	SetFailedCalls(int64)
+
+	Parent() RedisCommand
+	Fullname() string
 }
 
-type redisCommandProc struct {
-}
+type BaseCommand struct {
+	declaredName    string
+	proc            RedisCommandProc
+	fullname        string
+	group           RedisCommandGroup
+	history         []*CommandHistory
+	subCommands     []RedisCommand
+	subCommandsDict *db.HashTable[string, RedisCommand]
+	args            []*RedisCommandArgs
+	arity           int
+	aclCategories   uint64
+	flags           uint64
 
-func (r *redisCommandProc) Fullname() string {
-	return ""
-}
-
-func (r *redisCommandProc) Proc() RedisCommand {
-	return nil
-}
-
-func (r *redisCommandProc) DeclaredName() string {
-	return ""
-}
-
-func (r *redisCommandProc) SubCommands() []RedisCommand {
-	return nil
-}
-
-func (r *redisCommandProc) SubCommandsDict() *db.HashTable[string, RedisCommand] {
-	return nil
-}
-
-func (r *redisCommandProc) Args() []*RedisCommandArgs {
-	return nil
-}
-
-type AskingCommand struct{}
-
-func (r *AskingCommand) Fullname() string {
-	return "asking"
-}
-
-func (r *AskingCommand) Proc() RedisCommand {
-	return nil
-}
-
-func (r *AskingCommand) DeclaredName() string {
-	return "ASKING"
-}
-
-func (r *AskingCommand) SubCommands() []RedisCommand {
-	return nil
-}
-
-func (r *AskingCommand) SubCommandsDict() *db.HashTable[string, RedisCommand] {
-	return nil
-}
-
-func (r *AskingCommand) Args() []*RedisCommandArgs {
-	return nil
-}
-
-type ClientCommand struct{}
-
-func (r *ClientCommand) Fullname() string {
-	return "client"
-}
-
-func (r *ClientCommand) Proc() RedisCommand {
-	return nil
-}
-
-func (r *ClientCommand) DeclaredName() string {
-	return "CLIENT"
-}
-
-func (r *ClientCommand) SubCommands() []RedisCommand {
-	return nil
-}
-
-func (r *ClientCommand) SubCommandsDict() *db.HashTable[string, RedisCommand] {
-	return nil
-}
-
-func (r *ClientCommand) Args() []*RedisCommandArgs {
-	return nil
+	// Runtime populated data
+	id            int
+	microSeconds  int64
+	calls         int64
+	rejectedCalls int64
+	failedCalls   int64
+	parent        RedisCommand
 }
