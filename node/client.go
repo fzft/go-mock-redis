@@ -515,6 +515,8 @@ func (c *Client) processCommandAndResetClient() error {
 	if c.processCommand() {
 
 	}
+
+	return nil
 }
 
 // processCommand if this function gets called we already read a whole
@@ -564,15 +566,15 @@ func (c *Client) processCommand() bool {
 		}
 	}
 
-	cmdFlags := c.cmd.Flags()
-	isReadCmd := cmdFlags&CmdReadOnly != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdReadOnly != 0)
-	isWriteCmd := cmdFlags&CmdWrite != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdWrite != 0)
-	isDenyOOMCmd := cmdFlags&CmdDenyOOM != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdDenyOOM != 0)
-	isDenyStableCmd := cmdFlags&CmdStale != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdStale != 0)
-	isDenyLoadingCmd := cmdFlags&CmdLoading != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdLoading != 0)
-	isMayReplCmd := cmdFlags&(CmdWrite|CmdMayReplicate) != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&(CmdWrite|CmdMayReplicate) != 0)
-	isDenyAsyncLoadingCmd := cmdFlags&CmdNoAsyncLoading != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdNoAsyncLoading != 0)
-	isObeyClient := c.mustObeyClient()
+	//cmdFlags := c.cmd.Flags()
+	//isReadCmd := cmdFlags&CmdReadOnly != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdReadOnly != 0)
+	//isWriteCmd := cmdFlags&CmdWrite != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdWrite != 0)
+	//isDenyOOMCmd := cmdFlags&CmdDenyOOM != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdDenyOOM != 0)
+	//isDenyStableCmd := cmdFlags&CmdStale != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdStale != 0)
+	//isDenyLoadingCmd := cmdFlags&CmdLoading != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdLoading != 0)
+	//isMayReplCmd := cmdFlags&(CmdWrite|CmdMayReplicate) != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&(CmdWrite|CmdMayReplicate) != 0)
+	//isDenyAsyncLoadingCmd := cmdFlags&CmdNoAsyncLoading != 0 || (c.cmd.Fullname() == "execCommand" && c.mState.cmdFlags&CmdNoAsyncLoading != 0)
+	//isObeyClient := c.mustObeyClient()
 
 	if c.authRequired() {
 		/* AUTH and HELLO and no auth commands are valid even in
