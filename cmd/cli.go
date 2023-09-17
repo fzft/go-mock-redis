@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/fzft/go-mock-redis/db"
 	"github.com/fzft/go-mock-redis/deps/hredis"
+	"github.com/mattn/go-isatty"
 	"io"
 	"os"
 	"strconv"
+	"syscall"
 )
 
 var RedisVersion = "255.255.255"
@@ -20,6 +23,22 @@ const (
 	CCQuiet                            // Don't show non-error messages.
 )
 
+type CliSSLConfig struct {
+	// Use SSL/TLS for connection (default: false).
+	caserts string
+
+	// CA certificates directory.
+	casertsDir string
+
+	skipCasertsValidation bool
+
+	// Use client certificate authentication (default: false).
+	key string
+
+	// Client cipher list.
+	ciphers string
+}
+
 type CliConnInfo struct {
 	hostIp     string
 	hostPort   int
@@ -31,15 +50,24 @@ type CliConnInfo struct {
 type RedisCliCfg struct {
 	connInfo              *CliConnInfo
 	hostSocket            string
-	tls                   int
+	tls                   bool
+	sslCfg                *CliSSLConfig
 	repeat                int64
 	dbNum                 int
 	interactive           bool
 	shutdown              bool
 	inMulti               bool
 	eval                  string
+	evalLDB               bool
 	clusterMode           bool
 	clusterReissueCommand bool
+	pubsubMode            bool
+	prompt                string
+	serverVersion         string
+
+	resp2        int //value of 1: specified explicitly,value of 2: specified implicitly
+	resp3        int //value of 1: specified explicitly,value of 2: specified implicitly
+	currentResp3 bool
 }
 
 type RedisCli struct {
@@ -173,9 +201,9 @@ func (cli *RedisCli) Run() error {
 	config.shutdown = false
 	cli.config = config
 
-	if len(os.Args) == 1 {
-
-		return nil
+	if len(os.Args) == 0 && cli.config.eval != "" {
+		cli.connect(0)
+		cli.repl()
 	}
 
 	return nil
@@ -185,7 +213,7 @@ func (cli *RedisCli) Run() error {
 // flag: CCForce: The connection is performed even if there is already
 // *                a connected socket.
 // *    CCQuiet: Don't print errors if connection fails
-func (cli *RedisCli) connect(flag CliConnectFlag) error {
+func (cli *RedisCli) connect(flag CliConnectFlag) hredis.RedisStatus {
 	if context == nil || flag&CCForce != 0 {
 		if context != nil {
 			cli.config.dbNum = 0
@@ -198,10 +226,198 @@ func (cli *RedisCli) connect(flag CliConnectFlag) error {
 		} else {
 			context = hredis.RedisConnectUnix(cli.config.hostSocket)
 		}
+
+		if context.Err > 0 && cli.config.tls {
+			if err := cli.cliSecureConnection(context); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not negotiate a TLS connection: %s\n", err.Error())
+				context = nil
+				return hredis.RedisErr
+			}
+		}
+
+		if context.Err > 0 {
+			if flag&CCQuiet == 0 {
+				// TODO
+			}
+			return hredis.RedisErr
+		}
+
+		err := syscall.SetsockoptInt(context.RedisFd, syscall.SOL_SOCKET, syscall.SO_KEEPALIVE, 1)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to set SO_KEEPALIVE: %s\n", err.Error())
+		}
+
+		// Do Auth, select the right DB, switch to RESP3 if needed
+		if ok := cli.auth(context, cli.config.connInfo.user, cli.config.connInfo.auth); ok != hredis.RedisOk {
+			return hredis.RedisErr
+		}
+
+		if ok := cli.selectInputDb(context); ok != hredis.RedisOk {
+			return hredis.RedisErr
+		}
+
+		if ok := cli.switchProto(context); ok != hredis.RedisOk {
+			return hredis.RedisErr
+		}
 	}
-	return
+
+	return hredis.RedisOk
 }
 
 func (cli *RedisCli) repl() error {
+	//There is no need to initialize redis HELP when we are in lua debugger mode.
+	// It has its own HELP and commands (COMMAND or COMMAND DOCS will fail and got nothing).
+	//We will initialize the redis HELP after the Lua debugging session ended.
+	if !cli.config.evalLDB && isatty.IsTerminal(os.Stdout.Fd()) {
+		/* Initialize the help using the results of the COMMAND command. */
+		cli.initHelp()
+	}
 	return nil
+}
+
+/* initHelp sets up the helpEntries array with the command and group
+ * names and command descriptions obtained using the COMMAND DOCS command.
+ */
+func (cli *RedisCli) initHelp(ctx *hredis.RedisContext) {
+	// Dict type for a set of strings, used to collect names of command groups
+
+	var (
+		commandTable *hredis.RedisReply
+		groups       *db.HashTable[]
+	)
+
+	if ok := cli.connect(CCQuiet); ok == hredis.RedisErr {
+		/* Can not connect to the server, but we still want to provide
+		 * help, generate it only from the static cli_commands.c data instead. */
+		return
+	}
+	commandTable = ctx.RedisCommand("COMMAND DOCS")
+	if commandTable == nil || commandTable.Tp == hredis.RedisReplyError {
+
+	}
+}
+
+// cliSecureConnection wrapper around redisSecureConnection to avoid hredis_ssl deps
+func (cli *RedisCli) cliSecureConnection(ctx *hredis.RedisContext) error {
+	return nil
+}
+
+/*------------------------------------------------------------------------------
+ * Networking / parsing
+ *--------------------------------------------------------------------------- */
+
+// auth send AUTH command to the server
+func (cli *RedisCli) auth(ctx *hredis.RedisContext, user, auth string) hredis.RedisStatus {
+	var reply *hredis.RedisReply
+	if auth == "" {
+		return hredis.RedisOk
+	}
+
+	if user == "" {
+		reply = ctx.RedisCommand("AUTH %s", auth)
+	} else {
+		reply = ctx.RedisCommand("AUTH %s %s", auth, user)
+	}
+
+	if reply == nil {
+		fmt.Fprintf(os.Stderr, "\nI/O error\n")
+		return hredis.RedisErr
+	}
+
+	result := hredis.RedisOk
+	if reply.Tp == hredis.RedisReplyError {
+		result = hredis.RedisErr
+		fmt.Fprintf(os.Stderr, "AUTH failed: %s\n", reply.Str)
+	}
+	return result
+}
+
+// selectInputDb send select input_dbnum to the server
+func (cli *RedisCli) selectInputDb(ctx *hredis.RedisContext) hredis.RedisStatus {
+	var reply *hredis.RedisReply
+	if cli.config.connInfo.inputDbNum == cli.config.dbNum {
+		return hredis.RedisOk
+	}
+
+	reply = ctx.RedisCommand("SELECT %d", cli.config.connInfo.inputDbNum)
+	if reply == nil {
+		fmt.Fprintf(os.Stderr, "\nI/O error\n")
+		return hredis.RedisErr
+	}
+
+	result := hredis.RedisOk
+	if reply.Tp == hredis.RedisReplyError {
+		result = hredis.RedisErr
+		fmt.Fprintf(os.Stderr, "SELECT %d failed: %s\n", cli.config.connInfo.inputDbNum, reply.Str)
+	} else {
+		cli.config.dbNum = cli.config.connInfo.inputDbNum
+		cli.cliRefreshPrompt()
+	}
+	return result
+}
+
+// switchProto switch to RESP3 if needed
+func (cli *RedisCli) switchProto(ctx *hredis.RedisContext) hredis.RedisStatus {
+	var reply *hredis.RedisReply
+	if cli.config.resp3 < 0 || cli.config.resp2 > 0 {
+		return hredis.RedisOk
+	}
+
+	reply = ctx.RedisCommand("HELLO 3")
+	if reply == nil {
+		fmt.Fprintf(os.Stderr, "\nI/O error\n")
+		return hredis.RedisErr
+	}
+
+	result := hredis.RedisOk
+	if reply.Tp == hredis.RedisReplyError {
+		fmt.Fprintf(os.Stderr, "HELLO 3 failed: %s\n", reply.Str)
+		if cli.config.resp3 == 1 {
+			result = hredis.RedisErr
+		} else if cli.config.resp3 == 2 {
+			result = hredis.RedisOk
+		}
+	}
+
+	// Retrieve server version string for later use
+	for i := 0; i < reply.Elements; i += 2 {
+		if reply.Element[i].Str == "server" {
+			cli.config.serverVersion = reply.Element[i+1].Str
+			break
+		}
+	}
+
+	cli.config.currentResp3 = true
+	return result
+}
+
+func (cli *RedisCli) cliRefreshPrompt() {
+	if cli.config.evalLDB {
+		return
+	}
+
+	var prompt string
+
+	if cli.config.hostSocket != "" {
+		prompt = fmt.Sprintf("redis %s", cli.config.hostSocket)
+	} else {
+		prompt = fmt.Sprintf("redis://%s:%d", cli.config.connInfo.hostIp, cli.config.connInfo.hostPort)
+	}
+
+	// Add [dbnum] if needed
+	if cli.config.dbNum != 0 {
+		prompt = fmt.Sprintf("%s[%d]", prompt, cli.config.dbNum)
+	}
+
+	// Add TX if in transaction state
+	if cli.config.inMulti {
+		prompt = fmt.Sprintf("%s[TX]", prompt)
+	}
+
+	if cli.config.pubsubMode {
+		prompt = fmt.Sprintf("%s[pubsub]", prompt)
+	}
+
+	prompt = fmt.Sprintf("%s> ", prompt)
+	cli.config.prompt = prompt
 }

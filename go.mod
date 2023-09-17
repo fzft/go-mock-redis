@@ -3,6 +3,7 @@ module github.com/fzft/go-mock-redis
 go 1.20
 
 require (
+	github.com/mattn/go-isatty v0.0.19
 	github.com/stretchr/testify v1.8.1
 	go.uber.org/zap v1.25.0
 	golang.org/x/sys v0.10.0
