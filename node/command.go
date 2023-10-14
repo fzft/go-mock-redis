@@ -6,6 +6,20 @@ import (
 	"github.com/fzft/go-mock-redis/resp"
 )
 
+type CommandArgType uint8
+
+const (
+	ArgTypeString CommandArgType = iota
+	ArgTypeInteger
+	ArgTypeDouble
+	ArgTypeKey
+	ArgTypePattern
+	ArgTypeUnixTime
+	ArgTypePureToken
+	ArgTypeOnEOF
+	ArgTypeBlock
+)
+
 type CommandFlags uint64
 
 const (

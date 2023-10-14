@@ -2,17 +2,29 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/fzft/go-mock-redis/db"
 	"github.com/fzft/go-mock-redis/deps/hredis"
+	"github.com/fzft/go-mock-redis/deps/linenoise"
 	"github.com/mattn/go-isatty"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 )
 
-var RedisVersion = "255.255.255"
-var RedisVersionNum = 0x00ffffff
+var (
+	RedisVersion    = "255.255.255"
+	RedisVersionNum = 0x00ffffff
+
+	RedisCliKeepAliveInternal  = 15
+	RedisCliDefaultPipeTimeout = 30
+	RedisCliHisFileEnv         = "REDISCLI_HISTFILE"
+	RedisCliHisFileDefault     = ".rediscli_history"
+	RedisCliRCFileEnv          = "REDISCLI_RCFILE"
+	RedisCliRCFileDefault      = ".redisclirc"
+	RedisCliAuthEnv            = "REDISCLI_AUTH"
+)
 
 type CliConnectFlag int
 
@@ -21,6 +33,15 @@ var context *hredis.RedisContext
 const (
 	CCForce CliConnectFlag = 1 << iota // Re-connect if already connected.
 	CCQuiet                            // Don't show non-error messages.
+)
+
+type OutputMode uint8
+
+const (
+	OutputStandard = iota
+	OutputRaw
+	OutputJson
+	OutputQuotedJson
 )
 
 type CliSSLConfig struct {
@@ -59,11 +80,14 @@ type RedisCliCfg struct {
 	inMulti               bool
 	eval                  string
 	evalLDB               bool
+	evalLDBEnd            bool
 	clusterMode           bool
 	clusterReissueCommand bool
 	pubsubMode            bool
 	prompt                string
 	serverVersion         string
+	output                OutputMode
+	lastReply             *hredis.RedisReply
 
 	resp2        int //value of 1: specified explicitly,value of 2: specified implicitly
 	resp3        int //value of 1: specified explicitly,value of 2: specified implicitly
@@ -264,26 +288,156 @@ func (cli *RedisCli) connect(flag CliConnectFlag) hredis.RedisStatus {
 	return hredis.RedisOk
 }
 
-func (cli *RedisCli) repl() error {
+func (cli *RedisCli) repl() {
+
+	var (
+		history     bool
+		historyFile string
+	)
+
 	//There is no need to initialize redis HELP when we are in lua debugger mode.
 	// It has its own HELP and commands (COMMAND or COMMAND DOCS will fail and got nothing).
 	//We will initialize the redis HELP after the Lua debugging session ended.
-	if !cli.config.evalLDB && isatty.IsTerminal(os.Stdout.Fd()) {
+	if !cli.config.evalLDB && isatty.IsTerminal(os.Stdin.Fd()) {
 		/* Initialize the help using the results of the COMMAND command. */
-		cli.initHelp()
+		cli.initHelp(context)
 	}
-	return nil
+
+	cli.config.interactive = true
+	if isatty.IsTerminal(os.Stdin.Fd()) {
+		historyFile = getDotfilePath(RedisCliHisFileEnv, RedisCliHisFileDefault)
+		//keep in-memory history always regardless if history file can be determined
+		history = true
+		if historyFile != "" {
+			linenoise.Line.HistoryLoad(historyFile)
+		}
+		cliLoadPreferences()
+	}
+
+	cli.cliRefreshPrompt()
+	for {
+		var prompt string
+		if context != nil {
+			prompt = cli.config.prompt
+		} else {
+			prompt = fmt.Sprintf("not connected> ")
+		}
+		line, err := linenoise.Line.Prompt(prompt)
+		if err != nil {
+			if cli.config.pubsubMode {
+				cli.config.pubsubMode = false
+				if cli.connect(CCQuiet) == hredis.RedisOk {
+					continue
+				}
+			}
+			break
+		}
+
+		argv, argc := cli.splitArgs(line)
+		if argv == nil {
+			fmt.Printf("Invalid argument(s)\n")
+			if history {
+				linenoise.Line.AppendHistory(line)
+			}
+			if historyFile != "" {
+				linenoise.Line.HistorySave(historyFile)
+			}
+			continue
+		} else if argc == 0 {
+			continue
+		}
+
+		// check if we have a repeat command option and need to skip the first arg
+		repeat, err := strconv.Atoi(argv[0])
+		skipargs := 0
+
+		if argc > 1 && err == nil {
+			// Checking for error scenarios
+			if repeat <= 0 {
+				fmt.Println("Invalid redis-cli repeat command option value.")
+				continue
+			}
+			skipargs = 1
+		} else {
+			repeat = 1
+		}
+
+		if strings.EqualFold(argv[0], "quit") || strings.EqualFold(argv[0], "exit") {
+			os.Exit(0)
+		} else if argv[0][0] == ':' {
+			cliSetPreferences(argv, argc, true)
+			continue
+		} else if strings.EqualFold(argv[0], "restart") {
+			if cli.config.eval != "" {
+				cli.config.evalLDB = true
+				cli.config.output = OutputRaw
+				return
+			} else {
+				fmt.Printf("Use 'restart' only in Lua debugging mode.\n")
+			}
+		} else if argc == 3 && strings.EqualFold(argv[0], "connect") {
+			cli.config.connInfo.hostIp = argv[1]
+			cli.config.connInfo.hostPort, err = strconv.Atoi(argv[2])
+			if err != nil {
+				fmt.Printf("Invalid port number\n")
+				return
+			}
+			cli.cliRefreshPrompt()
+			cli.connect(CCForce)
+		} else if argc == 1 && strings.EqualFold(argv[0], "clear") {
+			linenoise.Line.ClearScreen()
+		} else {
+
+			startTime := time.Now()
+
+			/* If our debugging session ended, show the EVAL final
+			 * reply. */
+			if cli.config.evalLDBEnd {
+				cli.config.evalLDBEnd = false
+
+			}
+		}
+
+	}
+	return
+}
+
+func (cli *RedisCli) ReadReply(outputRawStrings string) {
+	if cli.config.lastReply != nil {
+		cli.config.lastReply = nil
+	}
+
+}
+
+func (cli *RedisCli) splitArgs(line string) ([]string, int) {
+	if cli.config.evalLDB && (strings.HasPrefix(line, "eval ") || strings.HasPrefix(line, "e ")) {
+		var argv []string
+		argc := 2
+		elen := 0
+		if line[1] == ' ' {
+			elen = 2 // "e "
+		} else {
+			elen = 5 // "eval "
+		}
+		argv = append(argv, line[:elen-1])
+		argv = append(argv, line[elen:])
+		return argv, argc
+	} else {
+		argv := strings.Fields(line)
+		return argv, len(argv)
+	}
+
 }
 
 /* initHelp sets up the helpEntries array with the command and group
  * names and command descriptions obtained using the COMMAND DOCS command.
  */
+// TODO: the command docs
 func (cli *RedisCli) initHelp(ctx *hredis.RedisContext) {
 	// Dict type for a set of strings, used to collect names of command groups
 
 	var (
 		commandTable *hredis.RedisReply
-		groups       *db.HashTable[]
 	)
 
 	if ok := cli.connect(CCQuiet); ok == hredis.RedisErr {
@@ -420,4 +574,56 @@ func (cli *RedisCli) cliRefreshPrompt() {
 
 	prompt = fmt.Sprintf("%s> ", prompt)
 	cli.config.prompt = prompt
+}
+
+/*------------------------------------------------------------------------------
+ * Help functions
+ *--------------------------------------------------------------------------- */
+
+type CliHelpType uint8
+
+const (
+	CliHelpCommand CliHelpType = iota
+	CliHelpGroup
+)
+
+type CliHelpEntry struct {
+	tp   CliHelpType
+	argc int
+	argv []string
+	full string
+	docs commandDocs
+}
+
+func getDotfilePath(envOverride, dotFilename string) string {
+	var dotPath string
+
+	path := os.Getenv(envOverride)
+	if path != "" {
+		if path == "/dev/null" {
+			return ""
+		}
+		dotPath = path
+	} else {
+		home := os.Getenv("HOME")
+		if home != "" {
+			dotPath = fmt.Sprintf("%s/%s", home, dotFilename)
+		}
+	}
+	return dotPath
+}
+
+// cliLoadPreferences load the ~/.redisclirc file
+func cliLoadPreferences() {
+	rcFile := getDotfilePath(RedisCliRCFileEnv, RedisCliRCFileDefault)
+	if rcFile == "" {
+		return
+	}
+
+	// TODO
+}
+
+// cliSetPreferences set the ~/.redisclirc file
+func cliSetPreferences(argv []string, argc int, interactive bool) {
+	// TODO
 }
